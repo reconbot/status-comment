@@ -17,7 +17,7 @@ interface Step {
   stdout?: string;
   stderr?: string;
 }
-k;
+
 interface Config {
   steps: Step[];
 }

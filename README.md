@@ -1,91 +1,99 @@
 # Status Comment
 
-A CLI for GitHub Actions that keeps a single pull request comment up to date with the Steps of a job: their Status and their Output. See [CONTEXT.md](./CONTEXT.md) for the vocabulary and [docs/adr](./docs/adr) for key decisions.
+Keeps one pull request comment up to date with a GitHub Actions job's Steps: each Step's Status and Output. Vocabulary: [CONTEXT.md](./CONTEXT.md). Decisions: [docs/adr](./docs/adr).
 
 ## Usage
 
 ```bash
-# Declare Steps up front; they start as `pending`
-status-comment --steps 'init,validate,plan,rules-check,apply'
+# Set the Steps, in order; `name=Display Name` sets a label
+status-comment steps set init validate plan rules-check='OPA Rules' apply
 
-# Set the Template for this job (a minijinja file; the built-in default is used otherwise)
-status-comment --template .github/terraform-comment.md.j2
+# Use your own Template
+status-comment config --set template=.github/terraform-comment.md.j2
 
-# Run a command: marks the Step `running`, captures stdout+stderr as one Output,
-# then maps the exit code to a Status
-status-comment --step-name plan --exit-code-map '0=success,1=failure,2=changes' --execute 'terraform plan -detailed-exitcode'
+# Run a command: the Step shows `running`, then the exit code picks its Status
+status-comment exec plan --exit-code-map 0=success,1=failure,2=changes 'terraform plan -detailed-exitcode'
 
-# Pipe Output in; Status is `success` unless --status is given
-echo foo | status-comment --step-name foo
-echo bar | status-comment --step-name bar --status party
+# Set a Status directly; piped stdin becomes the Output
+status-comment step apply --status running
+terraform apply | status-comment step apply
 
-# Close out the Run: pending → skipped, running → cancelled, banner and job summary
-status-comment --finalize
+# Close out the Run
+status-comment finalize
+
+# Print the stored comment without changing anything
+status-comment preview
 ```
 
-## Flags
+`status-comment --help` lists the commands; `status-comment <command> --help` shows each one's options.
 
-| Flag | Meaning |
+## Commands
+
+| Command | What it does |
 |---|---|
-| `--step-name <name>` | Required for any call that records a Step. Never read from the environment. |
-| `--display-name <label>` | The label shown for the Step. Defaults to title-casing the name (`rules-check` → `Rules Check`). |
-| `--steps <a,b,c>` | Declares Steps as `pending`. Later declarations merge with earlier ones and keep the first order. Steps that were never declared are appended at the end. |
-| `--status <status>` | Status for piped mode. `canceled` is accepted as an alias of `cancelled`. |
-| `--execute <cmd>` | Runs `cmd` under `bash -o pipefail` and records its Output and Status. |
-| `--exit-code-map <code=status,...>` | Maps exit codes to Statuses. Defaults to `0=success`. Any unmapped exit code records `failure`. |
-| `--template <file>` | Sets the Template. It's stored in a local temp file, so set it once per job. |
-| `--comment-key <key>` | Which Status Comment to update. Defaults to workflow name + job id. |
-| `--finalize` | Closes out the Run. |
-| `--token <token>` | Overrides the `GITHUB_TOKEN` env var. |
+| `steps set <name[=Display Name]>...` | Set the Run's Steps, in order. Unlisted Steps are removed; listed ones keep their Status; new ones start `pending`. Reopens a finalized Run. |
+| `steps reset` | Set every Step back to `pending` and clear its Output. Reopens a finalized Run. |
+| `step <name> [--status <status>]` | Set a Step's Status (default `success`). Piped stdin becomes its Output. Unknown Steps are appended. |
+| `exec <name> <command> [--exit-code-map <code=status,…>]` | Mark the Step `running`, run `<command>` under `bash -o pipefail`, set the Status from the exit code. Default map: `0=success`; unmapped codes are `failure`. |
+| `finalize` | Close out the Run: `pending` → `skipped`, `running` → `cancelled`; write the job summary. |
+| `config list` | Print the current config. |
+| `config [--load <file>] [--set <key>=<value>]...` | Change the config and print the result. `--load` replaces it with a JSON file (relative `template` paths resolve against that file's directory); `--set` changes one key. |
+| `preview [--target comment\|summary]` | Print the whole stored comment exactly as saved, hidden markers included (default), or the job summary it would produce. Changes nothing. |
+| `default-template` | Print the built-in Template. |
 
-## Statuses
+Every command also takes `--state-path <dir>` (where `config.json` lives, and `comment.md` when there's no PR; default `$RUNNER_TEMP/status-comment`, or `.` in Local Mode) and `--token <token>` (default `$GITHUB_TOKEN`).
 
-The Built-in Statuses are `pending`, `running`, `success`, `failure`, `skipped` and `cancelled`, and every Template must handle them. Any other value is a Custom Status (e.g. `changes`), which the Template renders however it likes.
+### Config keys
 
-A Step is **Failing** when its Status is `failure` or `cancelled`. Custom Statuses are never Failing.
+| Key | Meaning |
+|---|---|
+| `template` | Path to a Template file, saved as absolute. Later edits to the file apply. |
+| `comment-key` | Which Status Comment to update. Default: workflow name + job id; `local` in Local Mode. |
 
-## Exit codes and outputs
+## Statuses and exit codes
 
-- `--execute` exits non-zero when the resulting Status is Failing. If the exit code wasn't in the Exit Code Map, it exits with the command's own code. Otherwise it exits `0`.
-- Every call that records a Step writes `status=<status>` to `$GITHUB_OUTPUT`.
-- If the GitHub API can't be reached (e.g. fork PRs, missing `pull-requests: write`, rate limits), the tool prints a warning annotation and the exit code is unaffected.
+| Status | Meaning | Set by | Failing |
+|---|---|---|---|
+| `pending` | Not started | `steps set` for new Steps; `steps reset` | |
+| `running` | In progress | `exec` while the command runs | |
+| `success` | Finished cleanly | An exit code mapped to it (default `0`); `step` by default | |
+| `failure` | Finished with an error | Any unmapped exit code | ✓ |
+| `skipped` | Never ran | `finalize`, from `pending` | |
+| `cancelled` | Interrupted | `finalize`, from `running` | ✓ |
 
-## Caveats
+Any Built-in Status can also be set with `step --status` or `--exit-code-map`; `canceled` means `cancelled`. Anything else is a Custom Status (e.g. `changes`): no meaning to the tool, never Failing, rendered by the Template.
 
-- **Piped mode can't see failures upstream in the pipe.** In `terraform plan | status-comment …` the tool never sees terraform's exit code. Use `--execute` when the Status matters.
-- **Matrix jobs share a job id**, so every leg uses the same default Comment Key. Give each leg its own `--comment-key`.
-- **One writer per Comment Key at a time.** Jobs that share a key must be ordered with `needs:`, or one job's Steps will be lost.
-- **Templates must render Output through the `output` filter.** The comment is the only copy of each Step's Output, and the filter's markers are how it's read back (see [ADR 0001](./docs/adr/0001-state-lives-in-the-status-comment.md)).
-- **Without a PR** (e.g. on `push`), no comment is written. `--finalize` still writes the job summary.
+- `exec` exits `0` unless the Status is Failing. An unmapped exit code passes through; a mapped Failing one exits non-zero.
+- `step` and `exec` append `status=<status>` to `$GITHUB_OUTPUT`.
+- GitHub API errors (fork PRs, missing `pull-requests: write`, rate limits) print a warning annotation and leave the exit code alone.
 
-## Behaviour
+## How it works
 
-- One Status Comment per Comment Key. It's updated in place, and found by a hidden marker.
-- A new Run (a new run ID) resets the Steps. Re-run attempts of the same Run keep them.
-- Output shares one size budget across the comment. Failing Steps get priority, and truncation keeps the tail.
-- The comment and the job summary are rendered from the same Template.
+- One Status Comment per Comment Key, found by a hidden marker and updated in place.
+- A new run ID starts the Steps fresh; re-run attempts keep them.
+- Outputs share one size budget. Failing Steps get priority; truncation keeps the tail.
+- The comment and the job summary render from the same Template.
+- Without a PR (e.g. on `push`) the comment is `comment.md` in the state path, and `finalize` still writes the job summary.
 
-## Data model
+## Local Mode
 
-```typescript
-type BuiltInStatus = "pending" | "running" | "success" | "failure" | "skipped" | "cancelled";
+When `GITHUB_ACTIONS` isn't `true`, status-comment runs in **Local Mode** so you can try commands and Templates on your machine:
 
-interface Step {
-  name: string;          // identity, from --step-name
-  displayName: string;   // label, title-cased name unless --display-name
-  status: BuiltInStatus | string;
-  output?: string;       // merged stdout+stderr; lives only in the rendered comment
-}
+- It never calls GitHub.
+- The state path defaults to the current directory, so you get `./comment.md` and `./config.json`. The Comment Key defaults to `local`.
+- Each command that changes Steps prints the rendered comment to stderr.
+- A Run ends at `finalize`; the next `steps set`, `step` or `exec` starts a new one.
 
-interface State {        // hidden JSON in the Status Comment
-  runId: string;
-  steps: Step[];         // without output
-}
+```bash
+status-comment steps set lint test deploy
+status-comment exec lint 'cargo clippy'
+status-comment exec test 'cargo test'
+status-comment finalize
 ```
 
 ## Templates
 
-Templates are [minijinja](https://github.com/mitsuhiko/minijinja) (Jinja2) files. Nothing is HTML-escaped. The built-in default is [`src/default_template.md.j2`](./src/default_template.md.j2). A Template can use:
+Templates are [minijinja](https://github.com/mitsuhiko/minijinja) (Jinja2) files, rendered without HTML escaping. The default is [`src/default_template.md.j2`](./src/default_template.md.j2).
 
 | Variable | Contents |
 |---|---|
@@ -94,11 +102,52 @@ Templates are [minijinja](https://github.com/mitsuhiko/minijinja) (Jinja2) files
 | `github` | `workflow`, `job`, `actor`, `repository`, `sha`, `short_sha`, `pr_number`, `pr_url`, `server_url`, `updated_at` |
 | `target` | `"comment"` or `"summary"` |
 
-Render Output with `{{ step | output }}`. There is no `step.output`, on purpose. Booleans print as `True`/`False`, so test them with `{% if %}` rather than printing them.
+Render Output with `{{ step | output }}`, the only way to reach it: the filter's markers are how the next call reads it back ([ADR 0001](./docs/adr/0001-state-lives-in-the-status-comment.md)). Booleans print as `True`/`False`; branch on them with `{% if %}`.
+
+## Data model
+
+The hidden JSON at the bottom of the Status Comment. Simplified from [`src/state.rs`](./src/state.rs) and [`src/status.rs`](./src/status.rs):
+
+```rust
+struct State {
+    /// A different run ID starts a fresh State. Local Mode uses `local-1`, `local-2`, …
+    run_id: String,
+    /// Set by `finalize`; cleared by `steps set`, `steps reset`, `step` or `exec`.
+    finalized: bool,
+    steps: Vec<Step>,
+}
+
+struct Step {
+    /// Identity, from `steps set`, `step` or `exec`.
+    name: String,
+    /// Label: from `steps set name=Label`, or the title-cased name.
+    display_name: String,
+    status: Status,
+    /// Merged stdout and stderr. Never serialized: it lives only in the rendered comment.
+    output: Option<String>,
+}
+
+/// Serialized as a plain string: "success", "changes", …
+enum Status {
+    Pending,
+    Running,
+    Success,
+    Failure,
+    Skipped,
+    Cancelled,      // also parses "canceled"
+    Custom(String), // e.g. "changes"
+}
+```
+
+## Caveats
+
+- **`step` can't see upstream failures.** In `terraform plan | status-comment step plan`, terraform's exit code never reaches the tool. Use `exec` when the Status matters.
+- **Matrix legs share a job id**, so they share the default Comment Key. Give each leg its own key with `config --set comment-key=<key>`.
+- **One writer per Comment Key.** Order jobs that share a key with `needs:`; concurrent writers lose Steps.
 
 ## Installation
 
-A prebuilt binary is published on GitHub Releases, along with a `setup-status-comment` action that downloads it.
+Not published yet. CI uploads a Linux x86_64 build as the `status-comment-linux-x86_64` artifact. Release binaries and a `setup-status-comment` action are planned.
 
 ## Development
 

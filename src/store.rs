@@ -14,15 +14,17 @@ pub trait CommentStore {
     fn save(&mut self, body: &str) -> Result<()>;
 }
 
-/// The fallback when there's no PR: the "comment" is a file local to the job.
+/// The "comment" as a file: used without a PR, and in Local Mode.
 pub struct FileStore {
     pub path: PathBuf,
+    pub key: String,
 }
 
 impl CommentStore for FileStore {
+    /// A file holding another Comment Key's comment counts as empty.
     fn load(&mut self) -> Result<Option<String>> {
         match fs::read_to_string(&self.path) {
-            Ok(body) => Ok(Some(body)),
+            Ok(body) => Ok(Some(body).filter(|b| comment::has_key_marker(b, &self.key))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e).with_context(|| format!("reading {}", self.path.display())),
         }
@@ -152,14 +154,17 @@ mod tests {
     }
 
     #[test]
-    fn file_store_round_trip() {
+    fn file_store_ignores_another_keys_comment() {
         let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("comment.md");
+        fs::write(&path, body_for("other")).unwrap();
         let mut store = FileStore {
-            path: dir.path().join("a/b/comment.md"),
+            path: path.clone(),
+            key: "mine".into(),
         };
         assert_eq!(store.load().unwrap(), None);
-        store.save("hello").unwrap();
-        assert_eq!(store.load().unwrap().as_deref(), Some("hello"));
+        store.key = "other".into();
+        assert!(store.load().unwrap().is_some());
     }
 
     #[test]

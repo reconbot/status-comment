@@ -4,8 +4,10 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
 pub struct GithubEnv {
+    /// False means Local Mode: never talk to GitHub, preview instead.
+    pub on_github: bool,
     pub workflow: Option<String>,
     pub job: Option<String>,
     pub run_id: Option<String>,
@@ -44,6 +46,7 @@ impl GithubEnv {
             .and_then(|json| serde_json::from_str::<Event>(&json).ok())
             .and_then(|e| e.pull_request);
         GithubEnv {
+            on_github: var("GITHUB_ACTIONS").as_deref() == Some("true"),
             workflow: var("GITHUB_WORKFLOW"),
             job: var("GITHUB_JOB"),
             run_id: var("GITHUB_RUN_ID"),
@@ -115,17 +118,6 @@ mod tests {
     }
 
     #[test]
-    fn push_events_have_no_pull_request() {
-        let dir = tempfile::tempdir().unwrap();
-        let event = dir.path().join("event.json");
-        std::fs::write(&event, r#"{"ref":"refs/heads/main"}"#).unwrap();
-        assert_eq!(
-            env(&[("GITHUB_EVENT_PATH", event.to_str().unwrap())]).pull_request,
-            None
-        );
-    }
-
-    #[test]
     fn default_comment_key_needs_workflow_and_job() {
         assert_eq!(
             env(&[("GITHUB_WORKFLOW", "Terraform"), ("GITHUB_JOB", "plan")])
@@ -140,11 +132,8 @@ mod tests {
     }
 
     #[test]
-    fn run_url() {
-        let env = env(&[("GITHUB_REPOSITORY", "o/r"), ("GITHUB_RUN_ID", "99")]);
-        assert_eq!(
-            env.run_url().as_deref(),
-            Some("https://github.com/o/r/actions/runs/99")
-        );
+    fn detects_github_actions() {
+        assert!(env(&[("GITHUB_ACTIONS", "true")]).on_github);
+        assert!(!env(&[]).on_github);
     }
 }

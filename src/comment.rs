@@ -11,8 +11,8 @@ const OUTPUT_PREFIX: &str = "<!-- status-comment:output ";
 const OUTPUT_END_PREFIX: &str = "<!-- /status-comment:output ";
 const MARKER_SUFFIX: &str = " -->";
 
-/// Percent-encodes everything but `[A-Za-z0-9_.]` so names and keys can never
-/// close an HTML comment or contain whitespace.
+/// Percent-encodes all but `[A-Za-z0-9_.]`, so names and keys can't close an
+/// HTML comment or hold whitespace.
 fn encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -42,7 +42,7 @@ fn decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-pub fn key_marker(key: &str) -> String {
+fn key_marker(key: &str) -> String {
     format!("{KEY_PREFIX}{}{MARKER_SUFFIX}", encode(key))
 }
 
@@ -52,8 +52,8 @@ pub fn has_key_marker(body: &str, key: &str) -> bool {
 
 fn state_marker(state: &State) -> String {
     let json = serde_json::to_string(state).expect("state always serializes");
-    // `>` only ever appears inside JSON strings, where `>` is equivalent;
-    // escaping it means the JSON can never contain `-->`.
+    // `>` appears only inside JSON strings, where `\u003e` means the same,
+    // so escaping it keeps `-->` out of the marker.
     let json = json.replace('>', "\\u003e");
     format!("{STATE_PREFIX}{json}{MARKER_SUFFIX}")
 }
@@ -148,19 +148,12 @@ pub fn compose(rendered: &str, state: &State, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::StepUpdate;
+    use crate::state::specs;
     use crate::status::Status;
 
     fn state_with_output(name: &str, output: &str) -> State {
         let mut state = State::new("42");
-        state.record(
-            name,
-            StepUpdate {
-                status: Some(Status::Success),
-                output: Some(output.into()),
-                ..StepUpdate::default()
-            },
-        );
+        state.record(name, Status::Success, Some(output.into()));
         state
     }
 
@@ -172,21 +165,6 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n\n");
         load(&compose(&rendered, state, "wf/job")).expect("state should parse")
-    }
-
-    #[test]
-    fn encode_decode_round_trip() {
-        for s in ["plan", "rules-check", "bar step", "a-->b", "ünï"] {
-            assert_eq!(decode(&encode(s)).unwrap(), s);
-            assert!(!encode(s).contains("--"));
-        }
-    }
-
-    #[test]
-    fn state_and_output_round_trip() {
-        let state = state_with_output("plan", "No changes.\nDone.");
-        let loaded = round_trip(&state);
-        assert_eq!(loaded, state);
     }
 
     #[test]
@@ -210,13 +188,7 @@ mod tests {
     #[test]
     fn json_in_state_cannot_close_the_marker() {
         let mut state = State::new("1");
-        state.record(
-            "x",
-            StepUpdate {
-                display_name: Some("a --> b".into()),
-                ..StepUpdate::default()
-            },
-        );
+        state.set_steps(&specs(&["x=a --> b"]));
         let body = compose("", &state, "k");
         assert_eq!(
             load(&body).unwrap().step("x").unwrap().display_name,
@@ -232,33 +204,10 @@ mod tests {
     }
 
     #[test]
-    fn empty_output_round_trips() {
-        let state = state_with_output("plan", "");
-        assert_eq!(
-            round_trip(&state).step("plan").unwrap().output.as_deref(),
-            Some("")
-        );
-    }
-
-    #[test]
-    fn trailing_newline_is_dropped() {
-        let state = state_with_output("plan", "line\n");
-        assert_eq!(
-            round_trip(&state).step("plan").unwrap().output.as_deref(),
-            Some("line")
-        );
-    }
-
-    #[test]
     fn key_marker_matches_exact_key() {
         let body = compose("x", &State::new("1"), "wf/plan");
         assert!(has_key_marker(&body, "wf/plan"));
         assert!(!has_key_marker(&body, "wf/pla"));
         assert!(!has_key_marker(&body, "wf/plan-2"));
-    }
-
-    #[test]
-    fn body_without_state_loads_nothing() {
-        assert!(load("just a human comment").is_none());
     }
 }

@@ -15,6 +15,10 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ github.token }}
       SC: target/release/status-comment
+    defaults:
+      run:
+        # Adds pipefail, so `cargo build | tee` still fails the step.
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
@@ -22,25 +26,27 @@ jobs:
 
       # Build first so the rest of the job can report through status-comment itself.
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --release --locked 2>&1 | tee build.out
 
-      - name: Declare steps
-        run: $SC --steps fmt,clippy,test
+      - name: Set steps
+        run: |
+          $SC steps set build fmt clippy test
+          $SC step build < build.out
 
       - name: Format
-        run: $SC --step-name fmt --execute 'cargo fmt --check'
+        run: $SC exec fmt 'cargo fmt --check'
 
       - name: Clippy
-        run: $SC --step-name clippy --execute 'cargo clippy --all-targets --locked -- -D warnings'
+        run: $SC exec clippy 'cargo clippy --all-targets --locked -- -D warnings'
 
       - name: Test
-        run: $SC --step-name test --execute 'cargo test --locked'
+        run: $SC exec test 'cargo test --locked'
 
       - name: Finalize
         if: always()
         run: |
           if [ -x "$SC" ]; then
-            $SC --finalize
+            $SC finalize
           fi
 
       - name: Upload binary

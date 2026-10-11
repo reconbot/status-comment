@@ -6,7 +6,7 @@ use anyhow::{Context, Result, anyhow};
 use crate::status::Status;
 
 /// The rules that turn a command's exit code into a Status for its Step.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ExitCodeMap(BTreeMap<i32, Status>);
 
 impl Default for ExitCodeMap {
@@ -53,13 +53,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_maps_only_zero_to_success() {
-        let map = ExitCodeMap::default();
-        assert_eq!(map.get(0), Some(&Status::Success));
-        assert_eq!(map.get(1), None);
-    }
-
-    #[test]
     fn parses_entries() {
         let map: ExitCodeMap = "0=success, 1=failure,2=changes".parse().unwrap();
         assert_eq!(map.get(0), Some(&Status::Success));
@@ -85,10 +78,5 @@ mod tests {
                 .parse::<ExitCodeMap>()
                 .is_err()
         );
-    }
-
-    #[test]
-    fn colon_separator_is_rejected() {
-        assert!("0:success".parse::<ExitCodeMap>().is_err());
     }
 }

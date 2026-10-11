@@ -7,7 +7,7 @@
   "failure": "Failed", "skipped": "Skipped", "cancelled": "Cancelled",
 } -%}
 {% if target == "comment" %}
-### {{ github.workflow }} · {{ github.job }}
+### {{ github.workflow or "Status" }}{{ (" · " ~ github.job) if github.job else "" }}
 
 <sub>Updated {{ github.updated_at }}{% if github.short_sha %} · `{{ github.short_sha }}`{% endif %}{% if github.actor %} · @{{ github.actor }}{% endif %}</sub>
 

@@ -1,16 +1,16 @@
-# State lives in the Status Comment, and Outputs are never stored twice
+# State lives in the Status Comment; Output is stored once
 
-Every invocation is a separate process, possibly in a different job or on a different runner, so the Run's state has to live somewhere they can all reach. We store it in the Status Comment itself as a hidden JSON block holding Steps and Statuses. A Step's Output is not in that JSON: it exists only in the rendered body, between tool-owned markers, and is read back from there before each rewrite. A comment holds at most about 65k characters, so storing Output twice would halve the space available for it.
+Every invocation is a separate process, possibly in another job or on another runner, so a Run's state must live somewhere they all reach. It lives in the Status Comment: Steps and Statuses as hidden JSON, each Output only in the rendered body between tool-owned markers, read back before every rewrite. A comment holds about 65k characters; storing Output twice would halve its room.
 
 ## Considered Options
 
-- **A state file in `$RUNNER_TEMP`.** This is what `tf-summary` did. It's simple, but it only lives for one job. A second job that shares a Comment Key starts with empty state and wipes the first job's Steps from the comment.
-- **Workflow artifacts or cache.** These work across jobs, but they're slow and heavy for a write on every Step.
+- **A state file in `$RUNNER_TEMP`.** Simple, but it dies with the job: a second job sharing the Comment Key starts empty and wipes the first job's Steps.
+- **Workflow artifacts or cache.** Cross-job, but slow and heavy for a write per Step.
 
 ## Consequences
 
-- Templates must render Output only through the `output` filter. Output that skips the filter has no markers, so it's lost on the next write.
-- Output read back from the comment may already be truncated. That's acceptable, because truncation only ever shortens it.
-- Only one writer per Comment Key at a time. Concurrent jobs that share a key will lose updates, so they must be ordered with `needs:`.
-- The Template is not part of this state. It lives in a local temp file, so it's set once per job.
-- Runs without a PR have no comment, so their state falls back to a local temp file for that job.
+- Templates reach Output only through the `output` filter; Output rendered any other way has no markers and is lost on the next write.
+- Output read back may already be truncated. Truncation only shortens it, so that's safe.
+- One writer per Comment Key: concurrent jobs sharing a key lose updates, so order them with `needs:`.
+- The Template isn't part of this state. Its path lives in `config.json` in the state path, set once per job.
+- With no PR there's no comment; it's written to `comment.md` in the state path instead.

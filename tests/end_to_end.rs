@@ -1,0 +1,624 @@
+//! End-to-end tests that run the binary the way a workflow would.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use assert_cmd::Command;
+use mockito::Matcher;
+use predicates::prelude::*;
+use serde_json::json;
+use tempfile::TempDir;
+
+/// A fake GitHub Actions job: its temp dir, outputs and summary files.
+struct Job {
+    dir: TempDir,
+    run_id: String,
+    vars: Vec<(String, String)>,
+}
+
+impl Job {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("runner_temp")).unwrap();
+        Job {
+            dir,
+            run_id: "100".into(),
+            vars: Vec::new(),
+        }
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.dir.path().join(name)
+    }
+
+    fn with_pull_request(mut self, api_url: &str) -> Self {
+        let event = self.path("event.json");
+        fs::write(
+            &event,
+            r#"{"pull_request":{"number":5,"html_url":"https://github.com/o/r/pull/5"}}"#,
+        )
+        .unwrap();
+        self.vars
+            .push(("GITHUB_EVENT_PATH".into(), event.display().to_string()));
+        self.vars.push(("GITHUB_API_URL".into(), api_url.into()));
+        self.vars.push(("GITHUB_TOKEN".into(), "t0k".into()));
+        self
+    }
+
+    fn cmd(&self) -> Command {
+        let mut cmd = Command::cargo_bin("status-comment").unwrap();
+        cmd.env_clear()
+            .env("PATH", std::env::var("PATH").unwrap())
+            .env("GITHUB_ACTIONS", "true")
+            .env("GITHUB_WORKFLOW", "Terraform")
+            .env("GITHUB_JOB", "plan")
+            .env("GITHUB_RUN_ID", &self.run_id)
+            .env("GITHUB_RUN_ATTEMPT", "1")
+            .env("GITHUB_REPOSITORY", "o/r")
+            .env("GITHUB_SHA", "abcdef1234567890")
+            .env("GITHUB_ACTOR", "octocat")
+            .env("RUNNER_TEMP", self.path("runner_temp"))
+            .env("GITHUB_OUTPUT", self.path("github_output"))
+            .env("GITHUB_STEP_SUMMARY", self.path("step_summary"));
+        for (k, v) in &self.vars {
+            cmd.env(k, v);
+        }
+        cmd
+    }
+
+    /// The Status Comment when there's no PR: comment.md in the state path.
+    fn comment(&self) -> String {
+        fs::read_to_string(self.path("runner_temp/status-comment/comment.md")).unwrap()
+    }
+
+    fn read(&self, name: &str) -> String {
+        fs::read_to_string(self.path(name)).unwrap_or_default()
+    }
+}
+
+#[test]
+fn full_run_without_a_pull_request() {
+    let job = Job::new();
+    job.cmd()
+        .args(["steps", "set", "init", "plan", "apply"])
+        .assert()
+        .success();
+    assert!(job.comment().contains("| Apply | ⬜ Pending |"));
+
+    job.cmd()
+        .args(["step", "init"])
+        .write_stdin("Terraform initialized\n")
+        .assert()
+        .success();
+
+    job.cmd()
+        .args([
+            "exec",
+            "plan",
+            "--exit-code-map",
+            "0=success,1=failure,2=changes",
+        ])
+        .arg("echo 'Plan: 1 to add'; exit 2")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Plan: 1 to add"));
+
+    job.cmd().arg("finalize").assert().success();
+
+    let comment = job.comment();
+    assert!(comment.contains("| Init | ✅ Success |"), "{comment}");
+    assert!(comment.contains("| Plan | changes |"), "{comment}");
+    assert!(comment.contains("| Apply | ⏭️ Skipped |"), "{comment}");
+    assert!(comment.contains("| 🎉 | All done |"), "{comment}");
+    assert!(comment.contains("Terraform initialized"), "{comment}");
+    assert!(comment.contains("Plan: 1 to add"), "{comment}");
+
+    assert_eq!(
+        job.read("github_output"),
+        "status=success\nstatus=changes\n"
+    );
+    let summary = job.read("step_summary");
+    assert!(summary.contains("| Plan | changes |"), "{summary}");
+    assert!(
+        !summary.contains("### Terraform"),
+        "summary omits the comment header: {summary}"
+    );
+}
+
+#[test]
+fn exec_failure_is_failing_and_exits_with_command_code() {
+    let job = Job::new();
+    job.cmd()
+        .args(["exec", "validate", "echo bad >&2; exit 3"])
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("bad"));
+    assert!(job.comment().contains("| Validate | ❌ Failed |"));
+    assert_eq!(job.read("github_output"), "status=failure\n");
+}
+
+#[test]
+fn unmapped_zero_exit_records_failure_and_exits_non_zero() {
+    let job = Job::new();
+    job.cmd()
+        .args(["exec", "x", "--exit-code-map", "2=changes", "true"])
+        .assert()
+        .code(1);
+    assert!(job.comment().contains("| X | ❌ Failed |"));
+}
+
+#[test]
+fn mapped_failure_exits_non_zero() {
+    let job = Job::new();
+    job.cmd()
+        .args(["exec", "x", "--exit-code-map", "0=failure", "true"])
+        .assert()
+        .code(1);
+}
+
+#[test]
+fn step_sets_status_and_never_fails() {
+    let job = Job::new();
+    job.cmd()
+        .args(["step", "bar", "--status", "failure"])
+        .write_stdin("oops")
+        .assert()
+        .success();
+    assert!(job.comment().contains("#### Bar output"));
+    job.cmd()
+        .args(["step", "apply", "--status", "canceled"])
+        .assert()
+        .success();
+    assert!(job.comment().contains("| Apply | 🚫 Cancelled |"));
+}
+
+#[test]
+fn finalize_cancels_running_steps_and_warns() {
+    let job = Job::new();
+    job.cmd()
+        .args(["step", "apply", "--status", "running"])
+        .assert()
+        .success();
+    job.cmd().arg("finalize").assert().success();
+    let comment = job.comment();
+    assert!(comment.contains("| Apply | 🚫 Cancelled |"), "{comment}");
+    assert!(comment.contains("> [!WARNING]"), "{comment}");
+}
+
+#[test]
+fn new_run_resets_steps() {
+    let mut job = Job::new();
+    job.cmd().args(["step", "plan"]).assert().success();
+    job.run_id = "101".into();
+    job.cmd().args(["step", "apply"]).assert().success();
+    let comment = job.comment();
+    assert!(comment.contains("| Apply |"), "{comment}");
+    assert!(!comment.contains("| Plan |"), "{comment}");
+}
+
+#[test]
+fn steps_set_rewrites_the_list_with_display_names_and_reopens_the_run() {
+    let job = Job::new();
+    job.cmd()
+        .args(["steps", "set", "init", "plan", "apply"])
+        .assert()
+        .success();
+    job.cmd().args(["step", "init"]).assert().success();
+    job.cmd().arg("finalize").assert().success();
+    assert!(job.comment().contains("🎉"));
+
+    job.cmd()
+        .args(["steps", "set", "rules-check=OPA Rules", "init"])
+        .assert()
+        .success();
+    let comment = job.comment();
+    assert!(
+        comment.contains("| OPA Rules | ⬜ Pending |\n| Init | ✅ Success |\n"),
+        "{comment}"
+    );
+    assert!(!comment.contains("| Plan |"), "{comment}");
+    assert!(
+        !comment.contains("🎉"),
+        "reopened Run must not celebrate: {comment}"
+    );
+}
+
+#[test]
+fn steps_reset_clears_temporary_work_and_keeps_going() {
+    let job = Job::new();
+    job.cmd()
+        .args(["steps", "set", "plan", "apply"])
+        .assert()
+        .success();
+    job.cmd()
+        .args(["exec", "plan", "echo first try; exit 1"])
+        .assert()
+        .code(1);
+    job.cmd().args(["step", "scratch"]).assert().success();
+
+    // Drop the temporary Step, then start the remaining ones over.
+    job.cmd()
+        .args(["steps", "set", "plan", "apply"])
+        .assert()
+        .success();
+    job.cmd().args(["steps", "reset"]).assert().success();
+    let comment = job.comment();
+    assert!(
+        comment.contains("| Plan | ⬜ Pending |\n| Apply | ⬜ Pending |\n"),
+        "{comment}"
+    );
+    assert!(!comment.contains("Scratch"), "{comment}");
+    assert!(!comment.contains("first try"), "{comment}");
+
+    job.cmd().args(["step", "plan"]).assert().success();
+    assert!(job.comment().contains("| Plan | ✅ Success |"));
+}
+
+#[test]
+fn config_set_template_saves_its_path() {
+    let job = Job::new();
+    let template = job.path("t.md.j2");
+    fs::write(&template, "first").unwrap();
+    job.cmd()
+        .arg("config")
+        .arg(format!("--set=template={}", template.display()))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("t.md.j2"));
+    assert!(
+        job.read("runner_temp/status-comment/config.json")
+            .contains("t.md.j2")
+    );
+
+    // The path is saved, not the contents: later edits are picked up.
+    fs::write(
+        &template,
+        "{% for s in steps %}* {{ s.name }}: {{ s.status }}\n{% endfor %}",
+    )
+    .unwrap();
+    job.cmd()
+        .args(["step", "plan", "--status", "changes"])
+        .assert()
+        .success();
+    assert!(
+        job.comment().starts_with("* plan: changes\n"),
+        "{}",
+        job.comment()
+    );
+}
+
+#[test]
+fn config_set_comment_key_marks_the_comment() {
+    let job = Job::new();
+    job.cmd()
+        .args(["config", "list"])
+        .assert()
+        .success()
+        .stdout("{}\n");
+    job.cmd()
+        .args(["config", "--set", "comment-key=prod"])
+        .assert()
+        .success();
+    job.cmd()
+        .args(["config", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""comment-key": "prod""#));
+    job.cmd().args(["step", "plan"]).assert().success();
+    assert!(job.comment().contains("<!-- status-comment:key prod -->"));
+}
+
+#[test]
+fn config_rejects_unknown_keys_and_bad_templates() {
+    let job = Job::new();
+    job.cmd()
+        .args(["config", "--set", "colour=blue"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown config key"));
+    let template = job.path("bad.md.j2");
+    fs::write(&template, "{% for %}").unwrap();
+    job.cmd()
+        .arg("config")
+        .arg(format!("--set=template={}", template.display()))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid"));
+}
+
+#[test]
+fn config_load_replaces_the_saved_config() {
+    let job = Job::new();
+    fs::create_dir(job.path("ci")).unwrap();
+    fs::write(job.path("ci/t.md.j2"), "custom").unwrap();
+    fs::write(
+        job.path("ci/status.json"),
+        r#"{"template": "t.md.j2", "comment-key": "ci"}"#,
+    )
+    .unwrap();
+    job.cmd()
+        .args(["config", "--load"])
+        .arg(job.path("ci/status.json"))
+        .assert()
+        .success();
+    job.cmd().args(["step", "plan"]).assert().success();
+    let comment = job.comment();
+    assert!(comment.starts_with("custom"), "{comment}");
+    assert!(comment.contains("status-comment:key ci "), "{comment}");
+}
+
+#[test]
+fn missing_template_file_falls_back_to_the_default_with_a_warning() {
+    let job = Job::new();
+    let template = job.path("t.md.j2");
+    fs::write(&template, "custom").unwrap();
+    job.cmd()
+        .arg("config")
+        .arg(format!("--set=template={}", template.display()))
+        .assert()
+        .success();
+    fs::remove_file(&template).unwrap();
+    job.cmd()
+        .args(["step", "plan"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "::warning::status-comment: could not read Template",
+        ));
+    assert!(job.comment().contains("| Plan | ✅ Success |"));
+}
+
+#[test]
+fn state_path_moves_config_and_comment() {
+    let job = Job::new();
+    let state = job.path("state");
+    job.cmd()
+        .arg("--state-path")
+        .arg(&state)
+        .args(["config", "--set", "comment-key=moved"])
+        .assert()
+        .success();
+    // Global: accepted after the command too.
+    job.cmd()
+        .args(["step", "plan", "--state-path"])
+        .arg(&state)
+        .assert()
+        .success();
+    assert!(state.join("config.json").exists());
+    assert!(
+        fs::read_to_string(state.join("comment.md"))
+            .unwrap()
+            .contains("status-comment:key moved ")
+    );
+    assert!(!job.path("runner_temp/status-comment").exists());
+}
+
+#[test]
+fn preview_prints_without_changing_anything() {
+    let job = Job::new();
+    job.cmd()
+        .args(["step", "plan", "--status", "running"])
+        .assert()
+        .success();
+    let before = job.comment();
+    job.cmd()
+        .arg("preview")
+        .assert()
+        .success()
+        .stdout(before.clone());
+    job.cmd()
+        .args(["preview", "--target", "summary"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("| Plan |"))
+        .stdout(predicate::str::contains("### Terraform").not());
+    assert_eq!(job.comment(), before);
+    assert_eq!(job.read("github_output"), "status=running\n");
+}
+
+#[test]
+fn preview_without_a_comment_says_so() {
+    let job = Job::new();
+    job.cmd()
+        .arg("preview")
+        .assert()
+        .success()
+        .stdout("")
+        .stderr(predicate::str::contains("no Status Comment yet"));
+}
+
+#[test]
+fn usage_errors() {
+    let job = Job::new();
+    job.cmd().args(["exec", "plan"]).assert().code(2);
+    job.cmd().args(["steps", "set"]).assert().code(2);
+    job.cmd().args(["steps", "set", "plan="]).assert().code(2);
+    job.cmd().args(["step"]).assert().code(2);
+    job.cmd().args(["config"]).assert().code(2);
+    job.cmd().assert().code(2);
+}
+
+#[test]
+fn needs_a_comment_key_when_workflow_env_is_missing() {
+    let job = Job::new();
+    job.cmd()
+        .env_remove("GITHUB_WORKFLOW")
+        .args(["step", "x"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("comment-key"));
+}
+
+#[test]
+fn pull_request_creates_the_status_comment() {
+    let mut server = mockito::Server::new();
+    server
+        .mock("GET", "/repos/o/r/issues/5/comments")
+        .match_query(Matcher::Any)
+        .with_body("[]")
+        .create();
+    let create = server
+        .mock("POST", "/repos/o/r/issues/5/comments")
+        .match_header("authorization", "Bearer t0k")
+        .match_body(Matcher::AllOf(vec![
+            Matcher::Regex("Plan".into()),
+            Matcher::Regex("status-comment:key Terraform%2Fplan".into()),
+        ]))
+        .with_status(201)
+        .with_body(r#"{"id":77,"body":""}"#)
+        .create();
+
+    let job = Job::new().with_pull_request(&server.url());
+    job.cmd().args(["step", "plan"]).assert().success();
+    create.assert();
+}
+
+#[test]
+fn pull_request_updates_existing_comment_keeping_other_steps() {
+    // Build a realistic existing comment without a PR first.
+    let local = Job::new();
+    local
+        .cmd()
+        .args(["step", "init"])
+        .write_stdin("init log")
+        .assert()
+        .success();
+    let existing = local.comment();
+
+    let mut server = mockito::Server::new();
+    server
+        .mock("GET", "/repos/o/r/issues/5/comments")
+        .match_query(Matcher::Any)
+        .with_body(json!([{ "id": 1, "body": "hi" }, { "id": 2, "body": existing }]).to_string())
+        .create();
+    let update = server
+        .mock("PATCH", "/repos/o/r/issues/comments/2")
+        .match_body(Matcher::AllOf(vec![
+            Matcher::Regex(r"\| Init \| ✅ Success \|".into()),
+            Matcher::Regex("init log".into()),
+            Matcher::Regex(r"\| Plan \| ✅ Success \|".into()),
+        ]))
+        .with_body(r#"{"id":2,"body":""}"#)
+        .create();
+
+    let job = Job::new().with_pull_request(&server.url());
+    job.cmd().args(["step", "plan"]).assert().success();
+    update.assert();
+}
+
+#[test]
+fn github_api_failure_warns_without_changing_exit_code() {
+    let mut server = mockito::Server::new();
+    server
+        .mock("GET", "/repos/o/r/issues/5/comments")
+        .match_query(Matcher::Any)
+        .with_status(403)
+        .create();
+    let job = Job::new().with_pull_request(&server.url());
+    job.cmd()
+        .args(["exec", "plan", "echo ok"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "::warning::status-comment: could not read the Status Comment",
+        ));
+    assert_eq!(job.read("github_output"), "status=success\n");
+}
+
+/// Local Mode: run on a laptop with no GitHub Actions environment at all.
+fn local_cmd(dir: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("status-comment").unwrap();
+    cmd.env_clear()
+        .env("PATH", std::env::var("PATH").unwrap())
+        .current_dir(dir);
+    cmd
+}
+
+/// Local Mode keeps the comment in the current directory.
+fn local_comment(dir: &Path) -> String {
+    fs::read_to_string(dir.join("comment.md")).unwrap()
+}
+
+#[test]
+fn local_mode_previews_the_comment() {
+    let dir = tempfile::tempdir().unwrap();
+    local_cmd(dir.path())
+        .args(["steps", "set", "init", "plan"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "status-comment preview (Local Mode",
+        ))
+        .stderr(predicate::str::contains("### Local run\n\n<sub>"))
+        .stderr(predicate::str::contains("| Plan | ⬜ Pending |"));
+    local_cmd(dir.path())
+        .args(["exec", "plan", "echo hi"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hi"))
+        .stderr(predicate::str::contains("| Plan | ✅ Success |"));
+}
+
+#[test]
+fn default_template_works_as_a_template_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = local_cmd(dir.path())
+        .arg("default-template")
+        .output()
+        .unwrap();
+    fs::write(dir.path().join("mine.md.j2"), out.stdout).unwrap();
+    // A relative path is saved as absolute, in ./config.json.
+    local_cmd(dir.path())
+        .args(["config", "--set", "template=mine.md.j2"])
+        .assert()
+        .success();
+    let config = fs::read_to_string(dir.path().join("config.json")).unwrap();
+    let saved = fs::canonicalize(dir.path().join("mine.md.j2")).unwrap();
+    assert!(config.contains(saved.to_str().unwrap()), "{config}");
+    local_cmd(dir.path())
+        .args(["step", "plan"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("| Plan | ✅ Success |"));
+}
+
+#[test]
+fn local_mode_never_calls_github() {
+    // A token and a PR event lying around locally must not trigger API calls.
+    let mut server = mockito::Server::new();
+    let any = server.mock("GET", Matcher::Any).expect(0).create();
+    let dir = tempfile::tempdir().unwrap();
+    let event = dir.path().join("event.json");
+    fs::write(&event, r#"{"pull_request":{"number":5}}"#).unwrap();
+    local_cmd(dir.path())
+        .env("GITHUB_TOKEN", "t")
+        .env("GITHUB_REPOSITORY", "o/r")
+        .env("GITHUB_EVENT_PATH", &event)
+        .env("GITHUB_API_URL", server.url())
+        .args(["step", "plan"])
+        .assert()
+        .success();
+    any.assert();
+}
+
+#[test]
+fn local_mode_starts_a_new_run_after_finalize() {
+    let dir = tempfile::tempdir().unwrap();
+    local_cmd(dir.path())
+        .args(["step", "plan"])
+        .assert()
+        .success();
+    local_cmd(dir.path()).arg("finalize").assert().success();
+    // Finalizing again keeps the same Run.
+    local_cmd(dir.path()).arg("finalize").assert().success();
+    assert!(local_comment(dir.path()).contains("| Plan |"));
+
+    local_cmd(dir.path())
+        .args(["step", "apply"])
+        .assert()
+        .success();
+    let comment = local_comment(dir.path());
+    assert!(comment.contains("| Apply |"), "{comment}");
+    assert!(!comment.contains("| Plan |"), "{comment}");
+    assert!(comment.contains(r#""run_id":"local-2""#), "{comment}");
+}

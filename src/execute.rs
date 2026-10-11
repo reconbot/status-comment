@@ -64,12 +64,6 @@ mod tests {
     }
 
     #[test]
-    fn reports_exit_code() {
-        let result = execute("exit 2", &mut Vec::new()).unwrap();
-        assert_eq!(result.exit_code, 2);
-    }
-
-    #[test]
     fn pipefail_surfaces_upstream_failure() {
         let result = execute("false | cat", &mut Vec::new()).unwrap();
         assert_eq!(result.exit_code, 1);

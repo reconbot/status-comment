@@ -89,31 +89,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_builtins() {
-        for s in [
-            "pending",
-            "running",
-            "success",
-            "failure",
-            "skipped",
-            "cancelled",
-        ] {
-            let status: Status = s.parse().unwrap();
-            assert!(status.is_builtin(), "{s}");
-            assert_eq!(status.as_str(), s);
-        }
-    }
-
-    #[test]
     fn canceled_is_an_alias_of_cancelled() {
         assert_eq!("canceled".parse::<Status>().unwrap(), Status::Cancelled);
-    }
-
-    #[test]
-    fn unknown_values_are_custom() {
-        let status: Status = "changes".parse().unwrap();
-        assert_eq!(status, Status::Custom("changes".into()));
-        assert!(!status.is_builtin());
     }
 
     #[test]

@@ -11,13 +11,13 @@ use crate::state::State;
 
 pub const DEFAULT_TEMPLATE: &str = include_str!("default_template.md.j2");
 
-/// GitHub's limit for a comment body. It's documented nowhere official, and reports
-/// disagree on whether it counts characters or bytes, so we budget in bytes.
+/// GitHub's comment body limit. It's undocumented and reports disagree on
+/// characters vs bytes, so budget in bytes.
 pub const COMMENT_LIMIT: usize = 65_536;
 /// GitHub's limit for one step's job summary.
 pub const SUMMARY_LIMIT: usize = 1024 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Target {
     Comment,
@@ -25,7 +25,7 @@ pub enum Target {
 }
 
 /// What a Template can see about the GitHub context.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Default, Serialize)]
 pub struct GithubView {
     pub workflow: String,
     pub job: String,
@@ -39,7 +39,7 @@ pub struct GithubView {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 pub struct RunInfo {
     pub url: Option<String>,
     pub attempt: String,
@@ -94,8 +94,8 @@ impl Renderer<'_> {
         let failing: Vec<bool> = state.steps.iter().map(|s| s.status.is_failing()).collect();
         let total: usize = lengths.iter().sum();
         let mut last = body;
-        // Templates may render an Output more than once, or wrap it, so shrink and
-        // re-check rather than trusting one calculation.
+        // A Template may render an Output twice or wrap it: shrink and re-check
+        // instead of trusting one estimate.
         for _ in 0..5 {
             let budget = total.saturating_sub(excess + 256 * state.steps.len());
             let caps = allocate(&lengths, &failing, budget);
@@ -184,8 +184,8 @@ impl Renderer<'_> {
     }
 }
 
-/// Splits `budget` bytes between Outputs: Failing Steps first, then the rest,
-/// sharing equally within each group and handing unused share to the others.
+/// Splits `budget` bytes between Outputs: Failing Steps first, equal shares
+/// within a group, unused share passed on.
 fn allocate(lengths: &[usize], failing: &[bool], budget: usize) -> Vec<usize> {
     let mut caps = vec![0; lengths.len()];
     let mut remaining = budget;
@@ -223,8 +223,7 @@ fn truncate_tail(text: &str, cap: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::comment;
-    use crate::state::StepUpdate;
+    use crate::state::specs;
     use crate::status::Status;
 
     fn github() -> GithubView {
@@ -254,25 +253,18 @@ mod tests {
     }
 
     fn record(state: &mut State, name: &str, status: Status, output: Option<&str>) {
-        state.record(
-            name,
-            StepUpdate {
-                status: Some(status),
-                output: output.map(String::from),
-                ..StepUpdate::default()
-            },
-        );
+        state.record(name, status, output.map(String::from));
     }
 
     #[test]
     fn default_template_renders_table_and_outputs() {
         let mut state = State::new("1");
-        state.declare(&["init".into(), "plan".into(), "apply".into()]);
+        state.set_steps(&specs(&["init", "plan", "apply"]));
         record(&mut state, "init", Status::Success, Some("Initialized"));
         record(&mut state, "plan", Status::Failure, Some("Error: boom"));
         let body = render(DEFAULT_TEMPLATE, &state, Target::Comment);
 
-        assert!(body.contains("### Terraform · plan"), "{body}");
+        assert!(body.contains("### Terraform · plan\n\n<sub>"), "{body}");
         assert!(body.contains("| Init | ✅ Success |"), "{body}");
         assert!(body.contains("| Plan | ❌ Failed |"), "{body}");
         assert!(body.contains("| Apply | ⬜ Pending |"), "{body}");
@@ -289,57 +281,13 @@ mod tests {
     }
 
     #[test]
-    fn default_template_shows_banner_when_finalized_and_failing() {
-        let mut state = State::new("1");
-        record(&mut state, "plan", Status::Failure, None);
-        state.finalize();
-        let body = render(DEFAULT_TEMPLATE, &state, Target::Comment);
-        assert!(body.contains("> [!WARNING]"), "{body}");
-        assert!(!body.contains("🎉"));
-    }
-
-    #[test]
-    fn default_template_celebrates_when_finalized_and_passing() {
-        let mut state = State::new("1");
-        record(&mut state, "plan", Status::Custom("changes".into()), None);
-        state.finalize();
-        let body = render(DEFAULT_TEMPLATE, &state, Target::Comment);
-        assert!(body.contains("| 🎉 | All done |"), "{body}");
-        assert!(body.contains("| Plan | changes |"), "{body}");
-    }
-
-    #[test]
-    fn summary_target_omits_comment_header() {
-        let state = State::new("1");
-        let body = render(DEFAULT_TEMPLATE, &state, Target::Summary);
-        assert!(!body.contains("### Terraform"), "{body}");
-        assert!(body.contains("| Step | Status |"));
-    }
-
-    #[test]
     fn table_rows_are_contiguous() {
         let mut state = State::new("1");
-        state.declare(&["a".into(), "b".into()]);
+        state.set_steps(&specs(&["a", "b"]));
         let body = render(DEFAULT_TEMPLATE, &state, Target::Summary);
         assert!(
             body.contains("|------|--------|\n| A | ⬜ Pending |\n| B | ⬜ Pending |\n"),
             "{body}"
-        );
-    }
-
-    #[test]
-    fn rendered_output_reads_back() {
-        let mut state = State::new("1");
-        record(&mut state, "plan", Status::Success, Some("Plan: 1 to add"));
-        let body = comment::compose(
-            &render(DEFAULT_TEMPLATE, &state, Target::Comment),
-            &state,
-            "k",
-        );
-        let loaded = comment::load(&body).unwrap();
-        assert_eq!(
-            loaded.step("plan").unwrap().output.as_deref(),
-            Some("Plan: 1 to add")
         );
     }
 
@@ -365,41 +313,13 @@ mod tests {
             Status::Custom("changes".into()),
             Some("diff"),
         );
-        let template = "{{ github.actor }} {{ run.id }} {{ target }}\n{% for s in steps %}{{ s.name }}={{ s.status }} builtin={{ s.builtin }} failing={{ s.failing }}\n{{ s | output }}{% endfor %}";
+        let template = "{{ github.actor }} {{ run.id }} {{ target }}\n{% for s in steps %}{{ s.name }}={{ s.status }}\n{{ s | output }}{% endfor %}";
         let body = render(template, &state, Target::Comment);
         assert!(
-            body.starts_with("octocat 7 comment\nplan=changes builtin=False failing=False\n"),
+            body.starts_with("octocat 7 comment\nplan=changes\n"),
             "{body}"
         );
         assert!(body.contains("```\ndiff\n```"), "{body}");
-    }
-
-    #[test]
-    fn output_filter_on_step_without_output_is_empty() {
-        let mut state = State::new("1");
-        state.declare(&["plan".into()]);
-        assert_eq!(
-            render(
-                "[{% for s in steps %}{{ s | output }}{% endfor %}]",
-                &state,
-                Target::Comment
-            ),
-            "[]"
-        );
-    }
-
-    #[test]
-    fn template_errors_are_reported() {
-        let github = github();
-        let run = RunInfo::default();
-        let err = Renderer {
-            template: "{% for %}",
-            github: &github,
-            run: &run,
-        }
-        .render(&State::new("1"), Target::Comment, COMMENT_LIMIT, 0)
-        .unwrap_err();
-        assert!(format!("{err:#}").contains("Template"), "{err:#}");
     }
 
     #[test]

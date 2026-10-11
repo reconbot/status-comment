@@ -1,0 +1,45 @@
+{%- set icons = {
+  "pending": "⬜", "running": "⏳", "success": "✅",
+  "failure": "❌", "skipped": "⏭️", "cancelled": "🚫",
+} -%}
+{%- set labels = {
+  "pending": "Pending", "running": "Running…", "success": "Success",
+  "failure": "Failed", "skipped": "Skipped", "cancelled": "Cancelled",
+} -%}
+{% if target == "comment" %}
+### {{ github.workflow }} · {{ github.job }}
+
+<sub>Updated {{ github.updated_at }}{% if github.short_sha %} · `{{ github.short_sha }}`{% endif %}{% if github.actor %} · @{{ github.actor }}{% endif %}</sub>
+
+{% endif %}
+{% if run.finalized and run.failing %}
+> [!WARNING]
+> Some steps failed.
+
+{% endif %}
+| Step | Status |
+|------|--------|
+{% for step in steps %}
+| {{ step.display_name | replace("|", "\\|") }} | {% if step.builtin %}{{ icons[step.status] }} {{ labels[step.status] }}{% else %}{{ step.status }}{% endif %} |
+{% endfor %}
+{% if run.finalized and not run.failing %}
+| 🎉 | All done |
+{% endif %}
+{% for step in steps if step.has_output %}
+
+{% if step.failing %}
+#### {{ step.display_name }} output
+
+{{ step | output }}
+{% else %}
+<details><summary>{{ step.display_name }} output</summary>
+
+{{ step | output }}
+
+</details>
+{% endif %}
+{% endfor %}
+{% if run.url %}
+
+[View workflow run]({{ run.url }})
+{% endif %}

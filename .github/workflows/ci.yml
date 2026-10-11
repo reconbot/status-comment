@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      SC: target/release/status-comment
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # Build first so the rest of the job can report through status-comment itself.
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Declare steps
+        run: $SC --steps fmt,clippy,test
+
+      - name: Format
+        run: $SC --step-name fmt --execute 'cargo fmt --check'
+
+      - name: Clippy
+        run: $SC --step-name clippy --execute 'cargo clippy --all-targets --locked -- -D warnings'
+
+      - name: Test
+        run: $SC --step-name test --execute 'cargo test --locked'
+
+      - name: Finalize
+        if: always()
+        run: |
+          if [ -x "$SC" ]; then
+            $SC --finalize
+          fi
+
+      - name: Upload binary
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: status-comment-linux-x86_64
+          path: target/release/status-comment
+          if-no-files-found: error

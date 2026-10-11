@@ -1,6 +1,6 @@
 # Status Comment
 
-A CLI that keeps one pull request comment up to date with the Steps of a GitHub Actions job.
+A CLI that a pull request comment up to date with the Steps of a GitHub Actions job.
 
 ## Language
 

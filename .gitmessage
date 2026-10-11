@@ -1,0 +1,19 @@
+
+
+# <type>(<optional scope>): <summary>
+#
+# Types (Conventional Commits; release-please picks the version from them):
+#   feat:      new behaviour            -> minor bump (below 1.0), in CHANGELOG
+#   fix:       bug fix                  -> patch bump, in CHANGELOG
+#   perf:      faster, same behaviour   -> patch bump, in CHANGELOG
+#   revert:    revert a commit          -> patch bump, in CHANGELOG
+#   docs:      README, comments, ADRs   -> no release
+#   refactor:  no behaviour change      -> no release
+#   test:      tests only               -> no release
+#   build:     Cargo.toml, dependencies -> no release
+#   ci:        workflows                -> no release
+#   style:     formatting               -> no release
+#   chore:     anything else            -> no release
+#
+# Breaking change: add "!" (feat!: ...) or a "BREAKING CHANGE: ..." footer.
+# Force the next version with a footer:  Release-As: 0.1.1

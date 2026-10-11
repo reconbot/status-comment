@@ -381,12 +381,14 @@ pub fn run(cli: Cli, env: &GithubEnv, stdin: Option<String>) -> Result<i32> {
     }
     publish(&state)?;
 
+    // Local Mode shows exactly what `preview` would: the saved comment.md.
     if !env.on_github {
-        let preview = renderer.render(&state, Target::Comment, render::COMMENT_LIMIT, 0)?;
+        let path = state_dir(env, &cli).join("comment.md");
+        let saved = fs::read_to_string(&path).unwrap_or_default();
         eprintln!(
             "\n── status-comment preview (Local Mode, {}) ──\n{}\n── end preview ──",
-            state_dir(env, &cli).join("comment.md").display(),
-            preview.trim_end()
+            path.display(),
+            saved.trim_end()
         );
     }
 

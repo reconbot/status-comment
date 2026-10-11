@@ -1,6 +1,6 @@
 # Status Comment
 
-Keeps one pull request comment up to date with a GitHub Actions job's Steps: each Step's Status and Output. Vocabulary: [CONTEXT.md](./CONTEXT.md). Decisions: [docs/adr](./docs/adr).
+Keeps a pull request comment up to date with a GitHub Actions job's Steps: each Step's Status and Output. Vocabulary: [CONTEXT.md](./CONTEXT.md). Decisions: [docs/adr](./docs/adr).
 
 ## Usage
 
@@ -150,7 +150,27 @@ enum Status {
 
 ## Installation
 
-Not published yet. CI uploads a Linux x86_64 build as the `status-comment-linux-x86_64` artifact. Release binaries and a `setup-status-comment` action are planned.
+In a workflow, this repo is also an action that installs the binary and puts it on `PATH`:
+
+```yaml
+permissions:
+  pull-requests: write
+steps:
+  - uses: reconbot/status-comment@v0.1.0
+  - run: status-comment steps set build test
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+```
+
+It installs the release matching the tag you use, or the latest release otherwise (set `with: version: v0.1.0` when pinning to a commit SHA). Builds exist for Linux x86_64, Linux arm64 and macOS arm64; each release also has them as `status-comment-<target>.tar.gz`.
+
+Locally: `cargo install status-comment`.
+
+Releases are cut by [release-please](https://github.com/googleapis/release-please) from [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`) on `main`.
+
+## License
+
+[Apache-2.0](./LICENSE)
 
 ## Development
 
@@ -158,6 +178,7 @@ The Rust toolchain is pinned with [mise](https://mise.jdx.dev):
 
 ```bash
 mise install
+git config commit.template .gitmessage   # commit types cheat sheet
 mise exec -- cargo test
 mise exec -- cargo clippy --all-targets
 ```

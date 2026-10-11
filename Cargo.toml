@@ -2,6 +2,14 @@
 name = "status-comment"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.99"
+description = "Keeps a GitHub pull request comment up to date with a job's steps, statuses and output"
+license = "Apache-2.0"
+repository = "https://github.com/reconbot/status-comment"
+readme = "README.md"
+keywords = ["github-actions", "ci", "pull-request", "comment", "status"]
+categories = ["command-line-utilities", "development-tools::build-utils"]
+exclude = [".github/", ".gitmessage", "mise.toml", "release-please-config.json", ".release-please-manifest.json"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -17,3 +25,6 @@ assert_cmd = "2.2.2"
 mockito = "1.7.2"
 predicates = "3.1.4"
 tempfile = "3.27.0"
+
+[profile.release]
+strip = true

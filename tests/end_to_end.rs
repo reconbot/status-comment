@@ -582,7 +582,15 @@ fn local_mode_previews_the_comment() {
             "status-comment preview (Local Mode",
         ))
         .stderr(predicate::str::contains("### Local run\n\n<sub>"))
-        .stderr(predicate::str::contains("| Plan | ⬜ Pending |"));
+        .stderr(predicate::str::contains("| Plan | ⬜ Pending |"))
+        .stderr(predicate::str::contains("<!-- status-comment:state "));
+    // The same bytes as the saved comment.md, hidden markers included.
+    let saved = local_comment(dir.path());
+    local_cmd(dir.path())
+        .arg("preview")
+        .assert()
+        .success()
+        .stdout(saved);
     local_cmd(dir.path())
         .args(["exec", "plan", "echo hi"])
         .assert()

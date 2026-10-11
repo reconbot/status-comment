@@ -26,5 +26,5 @@ interface Config {
 ```bash
 status-comment --steps 'init,validate,plan,rules-check,apply,party' # creates a table of known steps defaulting to pending state
 status-comment --exit-code-map '0:success,1:failure:2:changes' --execute 'terraform plan'
-
+status-comment --template comment.md # updates the saved state with the specified template
 ```

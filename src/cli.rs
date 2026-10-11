@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::comment;
-use crate::config::{Config, Setting};
+use crate::config::{Config, Setting, TemplateSetting};
 use crate::execute::execute;
 use crate::exit_code_map::ExitCodeMap;
 use crate::github_env::GithubEnv;
@@ -17,7 +17,7 @@ use crate::store::{CommentStore, FileStore, GithubStore};
 
 const STATUSES_HELP: &str = "\
 Built-in Statuses:
-  pending    Not started: new Steps from `steps set`, and every Step after `steps reset`
+  pending    Not started: new Steps from `steps set`, and every Step after `steps --reset-status`
   running    In progress: set by `exec` while the command runs
   success    Finished cleanly: exit code 0 by default, and `step` by default
   failure    Finished with an error: any exit code not in --exit-code-map  [Failing]
@@ -49,9 +49,15 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Set or reset the Run's Steps.
-    #[command(subcommand)]
-    Steps(StepsCommand),
+    /// Set the Run's Steps, or reset their Statuses.
+    #[command(arg_required_else_help = true)]
+    Steps {
+        /// Set every Step back to pending and clear its Output (after `set`, when both are given).
+        #[arg(long, global = true)]
+        reset_status: bool,
+        #[command(subcommand)]
+        command: Option<StepsCommand>,
+    },
 
     /// Set a Step's Status. Piped stdin becomes its Output.
     #[command(after_help = STATUSES_HELP, arg_required_else_help = true)]
@@ -79,18 +85,16 @@ pub enum Command {
     /// Close out the Run: pending → skipped, running → cancelled; write the job summary.
     Finalize,
 
-    /// Change or list the config. Changes print the result.
-    #[command(arg_required_else_help = true)]
-    Config {
-        #[command(subcommand)]
-        command: Option<ConfigCommand>,
-        /// Set a value: `template=<file>` or `comment-key=<key>`. Repeatable.
-        #[arg(long, value_name = "KEY=VALUE")]
-        set: Vec<Setting>,
-        /// Replace the config with this JSON file (applied before --set).
-        #[arg(long, value_name = "FILE")]
-        load: Option<PathBuf>,
-    },
+    /// List or change the config.
+    #[command(
+        subcommand,
+        after_help = "\
+Defaults, as the equivalent commands:
+  config set template=default
+  config set comment-key=\"$GITHUB_WORKFLOW/$GITHUB_JOB\"   (on GitHub)
+  config set comment-key=local                           (in Local Mode)"
+    )]
+    Config(ConfigCommand),
 
     /// Print the stored comment, or the job summary, without changing anything.
     Preview {
@@ -112,14 +116,20 @@ pub enum StepsCommand {
         #[arg(required = true, value_name = "STEP")]
         steps: Vec<StepSpec>,
     },
-    /// Set every Step back to pending and clear its Output.
-    Reset,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
     /// Print the current config.
     List,
+    /// Set values and print the result: `template=<file|default>`, `comment-key=<key>`.
+    Set {
+        #[arg(required = true, value_name = "KEY=VALUE")]
+        settings: Vec<Setting>,
+    },
+    /// Replace the config with this JSON file and print the result. Relative
+    /// `template` paths resolve against the file's directory.
+    Load { file: PathBuf },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -169,7 +179,7 @@ fn open_store(env: &GithubEnv, cli: &Cli, key: &str) -> Box<dyn CommentStore> {
 }
 
 fn load_template(config: &Config) -> String {
-    let Some(path) = &config.template else {
+    let Some(TemplateSetting::File(path)) = &config.template else {
         return render::DEFAULT_TEMPLATE.to_string();
     };
     fs::read_to_string(path).unwrap_or_else(|e| {
@@ -186,7 +196,11 @@ fn load_template(config: &Config) -> String {
 fn local_run_id(previous: Option<&State>, command: &Command) -> String {
     let starts_steps = matches!(
         command,
-        Command::Steps(StepsCommand::Set { .. }) | Command::Step { .. } | Command::Exec { .. }
+        Command::Steps {
+            command: Some(StepsCommand::Set { .. }),
+            ..
+        } | Command::Step { .. }
+            | Command::Exec { .. }
     );
     match previous {
         Some(state) if state.finalized && starts_steps => {
@@ -210,38 +224,44 @@ fn append_line(path: &Path, line: &str) -> Result<()> {
 
 /// Runs one invocation and returns the process exit code.
 pub fn run(cli: Cli, env: &GithubEnv, stdin: Option<String>) -> Result<i32> {
-    let config_path = state_dir(env, &cli).join("config.json");
-    match &cli.command {
-        Command::DefaultTemplate => {
-            print!("{}", render::DEFAULT_TEMPLATE);
-            return Ok(0);
-        }
-        Command::Config { set, load, .. } => {
-            let mut config = match load {
-                Some(path) => Config::from_file(path)?,
-                None => Config::load(&config_path)?,
-            };
-            for setting in set {
-                config.set(setting)?;
-            }
-            if load.is_some() || !set.is_empty() {
-                config.save(&config_path)?;
-            }
-            println!("{}", serde_json::to_string_pretty(&config)?);
-            return Ok(0);
-        }
-        _ => {}
+    if let Command::DefaultTemplate = cli.command {
+        print!("{}", render::DEFAULT_TEMPLATE);
+        return Ok(0);
     }
 
-    let config = Config::load(&config_path)?;
+    // Every other command creates the config, with defaults filled in, if needed.
+    let config_path = state_dir(env, &cli).join("config.json");
+    let (mut config, mut changed) = match &cli.command {
+        Command::Config(ConfigCommand::Load { file }) => (Config::from_file(file)?, true),
+        _ => match Config::read(&config_path)? {
+            Some(config) => (config, false),
+            None => (Config::default(), true),
+        },
+    };
     let default_key = if env.on_github {
         env.default_comment_key()
     } else {
         Some("local".to_string())
     };
-    let Some(key) = config.comment_key.clone().or(default_key) else {
+    changed |= config.fill_defaults(default_key);
+    if let Command::Config(ConfigCommand::Set { settings }) = &cli.command {
+        for setting in settings {
+            config.set(setting)?;
+            changed = true;
+        }
+    }
+    if changed {
+        config.save(&config_path)?;
+    }
+
+    if let Command::Config(_) = cli.command {
+        println!("{}", serde_json::to_string_pretty(&config)?);
+        return Ok(0);
+    }
+
+    let Some(key) = config.comment_key.clone() else {
         bail!(
-            "cannot work out a Comment Key (GITHUB_WORKFLOW or GITHUB_JOB is unset); set one with `config --set comment-key=<key>`"
+            "cannot work out a Comment Key (GITHUB_WORKFLOW or GITHUB_JOB is unset); set one with `config set comment-key=<key>`"
         );
     };
     let template = load_template(&config);
@@ -306,12 +326,16 @@ pub fn run(cli: Cli, env: &GithubEnv, stdin: Option<String>) -> Result<i32> {
 
     let mut exit_code = 0;
     let recorded = match &cli.command {
-        Command::Steps(StepsCommand::Set { steps }) => {
-            state.set_steps(steps);
-            None
-        }
-        Command::Steps(StepsCommand::Reset) => {
-            state.reset();
+        Command::Steps {
+            reset_status,
+            command,
+        } => {
+            if let Some(StepsCommand::Set { steps }) = command {
+                state.set_steps(steps);
+            }
+            if *reset_status {
+                state.reset();
+            }
             None
         }
         Command::Finalize => {
@@ -345,7 +369,7 @@ pub fn run(cli: Cli, env: &GithubEnv, stdin: Option<String>) -> Result<i32> {
             state.record(name, status.clone(), Some(executed.output));
             Some((name, status))
         }
-        Command::Config { .. } | Command::Preview { .. } | Command::DefaultTemplate => {
+        Command::Config(_) | Command::Preview { .. } | Command::DefaultTemplate => {
             unreachable!("handled above")
         }
     };

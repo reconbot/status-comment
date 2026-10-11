@@ -224,7 +224,7 @@ fn steps_set_rewrites_the_list_with_display_names_and_reopens_the_run() {
 }
 
 #[test]
-fn steps_reset_clears_temporary_work_and_keeps_going() {
+fn reset_status_clears_temporary_work_and_keeps_going() {
     let job = Job::new();
     job.cmd()
         .args(["steps", "set", "plan", "apply"])
@@ -236,12 +236,11 @@ fn steps_reset_clears_temporary_work_and_keeps_going() {
         .code(1);
     job.cmd().args(["step", "scratch"]).assert().success();
 
-    // Drop the temporary Step, then start the remaining ones over.
+    // Drop the temporary Step and start the rest over, in one call.
     job.cmd()
-        .args(["steps", "set", "plan", "apply"])
+        .args(["steps", "set", "plan", "apply", "--reset-status"])
         .assert()
         .success();
-    job.cmd().args(["steps", "reset"]).assert().success();
     let comment = job.comment();
     assert!(
         comment.contains("| Plan | ⬜ Pending |\n| Apply | ⬜ Pending |\n"),
@@ -252,6 +251,16 @@ fn steps_reset_clears_temporary_work_and_keeps_going() {
 
     job.cmd().args(["step", "plan"]).assert().success();
     assert!(job.comment().contains("| Plan | ✅ Success |"));
+
+    // On its own, --reset-status keeps the list.
+    job.cmd()
+        .args(["steps", "--reset-status"])
+        .assert()
+        .success();
+    assert!(
+        job.comment()
+            .contains("| Plan | ⬜ Pending |\n| Apply | ⬜ Pending |\n")
+    );
 }
 
 #[test]
@@ -260,8 +269,8 @@ fn config_set_template_saves_its_path() {
     let template = job.path("t.md.j2");
     fs::write(&template, "first").unwrap();
     job.cmd()
-        .arg("config")
-        .arg(format!("--set=template={}", template.display()))
+        .args(["config", "set"])
+        .arg(format!("template={}", template.display()))
         .assert()
         .success()
         .stdout(predicate::str::contains("t.md.j2"));
@@ -294,9 +303,9 @@ fn config_set_comment_key_marks_the_comment() {
         .args(["config", "list"])
         .assert()
         .success()
-        .stdout("{}\n");
+        .stdout("{\n  \"template\": \"default\",\n  \"comment-key\": \"Terraform/plan\"\n}\n");
     job.cmd()
-        .args(["config", "--set", "comment-key=prod"])
+        .args(["config", "set", "comment-key=prod"])
         .assert()
         .success();
     job.cmd()
@@ -312,15 +321,15 @@ fn config_set_comment_key_marks_the_comment() {
 fn config_rejects_unknown_keys_and_bad_templates() {
     let job = Job::new();
     job.cmd()
-        .args(["config", "--set", "colour=blue"])
+        .args(["config", "set", "colour=blue"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown config key"));
     let template = job.path("bad.md.j2");
     fs::write(&template, "{% for %}").unwrap();
     job.cmd()
-        .arg("config")
-        .arg(format!("--set=template={}", template.display()))
+        .args(["config", "set"])
+        .arg(format!("template={}", template.display()))
         .assert()
         .failure()
         .stderr(predicate::str::contains("invalid"));
@@ -337,7 +346,7 @@ fn config_load_replaces_the_saved_config() {
     )
     .unwrap();
     job.cmd()
-        .args(["config", "--load"])
+        .args(["config", "load"])
         .arg(job.path("ci/status.json"))
         .assert()
         .success();
@@ -353,8 +362,8 @@ fn missing_template_file_falls_back_to_the_default_with_a_warning() {
     let template = job.path("t.md.j2");
     fs::write(&template, "custom").unwrap();
     job.cmd()
-        .arg("config")
-        .arg(format!("--set=template={}", template.display()))
+        .args(["config", "set"])
+        .arg(format!("template={}", template.display()))
         .assert()
         .success();
     fs::remove_file(&template).unwrap();
@@ -375,7 +384,7 @@ fn state_path_moves_config_and_comment() {
     job.cmd()
         .arg("--state-path")
         .arg(&state)
-        .args(["config", "--set", "comment-key=moved"])
+        .args(["config", "set", "comment-key=moved"])
         .assert()
         .success();
     // Global: accepted after the command too.
@@ -414,6 +423,29 @@ fn preview_prints_without_changing_anything() {
         .stdout(predicate::str::contains("### Terraform").not());
     assert_eq!(job.comment(), before);
     assert_eq!(job.read("github_output"), "status=running\n");
+}
+
+#[test]
+fn every_command_writes_the_defaults_to_the_config() {
+    let job = Job::new();
+    job.cmd().arg("preview").assert().success();
+    let config = job.read("runner_temp/status-comment/config.json");
+    assert!(config.contains(r#""template": "default""#), "{config}");
+    assert!(
+        config.contains(r#""comment-key": "Terraform/plan""#),
+        "{config}"
+    );
+
+    // A saved default isn't re-derived: later env changes don't move the comment.
+    job.cmd()
+        .env("GITHUB_JOB", "other")
+        .args(["step", "plan"])
+        .assert()
+        .success();
+    assert!(
+        job.comment()
+            .contains("status-comment:key Terraform%2Fplan ")
+    );
 }
 
 #[test]
@@ -566,10 +598,11 @@ fn default_template_works_as_a_template_file() {
         .arg("default-template")
         .output()
         .unwrap();
+    assert!(!dir.path().join("config.json").exists());
     fs::write(dir.path().join("mine.md.j2"), out.stdout).unwrap();
     // A relative path is saved as absolute, in ./config.json.
     local_cmd(dir.path())
-        .args(["config", "--set", "template=mine.md.j2"])
+        .args(["config", "set", "template=mine.md.j2"])
         .assert()
         .success();
     let config = fs::read_to_string(dir.path().join("config.json")).unwrap();

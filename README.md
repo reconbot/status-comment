@@ -9,7 +9,7 @@ Keeps one pull request comment up to date with a GitHub Actions job's Steps: eac
 status-comment steps set init validate plan rules-check='OPA Rules' apply
 
 # Use your own Template
-status-comment config --set template=.github/terraform-comment.md.j2
+status-comment config set template=.github/terraform-comment.md.j2
 
 # Run a command: the Step shows `running`, then the exit code picks its Status
 status-comment exec plan --exit-code-map 0=success,1=failure,2=changes 'terraform plan -detailed-exitcode'
@@ -32,12 +32,13 @@ status-comment preview
 | Command | What it does |
 |---|---|
 | `steps set <name[=Display Name]>...` | Set the Run's Steps, in order. Unlisted Steps are removed; listed ones keep their Status; new ones start `pending`. Reopens a finalized Run. |
-| `steps reset` | Set every Step back to `pending` and clear its Output. Reopens a finalized Run. |
+| `steps --reset-status` | Set every Step back to `pending` and clear its Output. Reopens a finalized Run. With `set` (`steps set a b --reset-status`), the list is applied first. |
 | `step <name> [--status <status>]` | Set a Step's Status (default `success`). Piped stdin becomes its Output. Unknown Steps are appended. |
 | `exec <name> <command> [--exit-code-map <code=status,…>]` | Mark the Step `running`, run `<command>` under `bash -o pipefail`, set the Status from the exit code. Default map: `0=success`; unmapped codes are `failure`. |
 | `finalize` | Close out the Run: `pending` → `skipped`, `running` → `cancelled`; write the job summary. |
 | `config list` | Print the current config. |
-| `config [--load <file>] [--set <key>=<value>]...` | Change the config and print the result. `--load` replaces it with a JSON file (relative `template` paths resolve against that file's directory); `--set` changes one key. |
+| `config set <key>=<value>...` | Change one or more keys and print the result. |
+| `config load <file>` | Replace the config with a JSON file and print the result. Relative `template` paths resolve against that file's directory. |
 | `preview [--target comment\|summary]` | Print the whole stored comment exactly as saved, hidden markers included (default), or the job summary it would produce. Changes nothing. |
 | `default-template` | Print the built-in Template. |
 
@@ -45,16 +46,24 @@ Every command also takes `--state-path <dir>` (where `config.json` lives, and `c
 
 ### Config keys
 
-| Key | Meaning |
-|---|---|
-| `template` | Path to a Template file, saved as absolute. Later edits to the file apply. |
-| `comment-key` | Which Status Comment to update. Default: workflow name + job id; `local` in Local Mode. |
+The first command to run (any but `default-template`) creates `config.json` in the state directory.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `template` | `default` | `default` for the built-in Template, or a Template file path, saved as absolute. Later edits to the file apply. |
+| `comment-key` | "$GITHUB_WORKFLOW/$GITHUB_JOB" on GitHub; `local` in Local Mode | Key to find the comment to update. |
+
+If using a matrix in your workflow and want different comments you might want to append something from the matrix:
+
+```bash
+status-comment config set comment-key="$GITHUB_WORKFLOW/$GITHUB_JOB/${{ matrix.dir }}"
+```
 
 ## Statuses and exit codes
 
 | Status | Meaning | Set by | Failing |
 |---|---|---|---|
-| `pending` | Not started | `steps set` for new Steps; `steps reset` | |
+| `pending` | Not started | `steps set` for new Steps; `steps --reset-status` | |
 | `running` | In progress | `exec` while the command runs | |
 | `success` | Finished cleanly | An exit code mapped to it (default `0`); `step` by default | |
 | `failure` | Finished with an error | Any unmapped exit code | ✓ |
@@ -112,7 +121,7 @@ The hidden JSON at the bottom of the Status Comment. Simplified from [`src/state
 struct State {
     /// A different run ID starts a fresh State. Local Mode uses `local-1`, `local-2`, …
     run_id: String,
-    /// Set by `finalize`; cleared by `steps set`, `steps reset`, `step` or `exec`.
+    /// Set by `finalize`; cleared by `steps`, `step` or `exec`.
     finalized: bool,
     steps: Vec<Step>,
 }
@@ -138,12 +147,6 @@ enum Status {
     Custom(String), // e.g. "changes"
 }
 ```
-
-## Caveats
-
-- **`step` can't see upstream failures.** In `terraform plan | status-comment step plan`, terraform's exit code never reaches the tool. Use `exec` when the Status matters.
-- **Matrix legs share a job id**, so they share the default Comment Key. Give each leg its own key with `config --set comment-key=<key>`.
-- **One writer per Comment Key.** Order jobs that share a key with `needs:`; concurrent writers lose Steps.
 
 ## Installation
 

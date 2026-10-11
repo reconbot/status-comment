@@ -41,7 +41,7 @@ The one PR comment showing every Step under a Comment Key, rewritten in place.
 _Avoid_: Bot comment, summary comment
 
 **Comment Key**:
-Which Status Comment an invocation updates. Defaults to workflow name + job id; a config setting overrides it.
+Which Status Comment an invocation updates. A config setting, defaulting to workflow name + job id.
 _Avoid_: Comment ID
 
 **Template**:

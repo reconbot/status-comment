@@ -7,14 +7,42 @@ use std::str::FromStr;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
-/// Keys are spelled as `config --set` takes them.
+/// Which Template renders the Status Comment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum TemplateSetting {
+    /// The built-in Template, spelled `default`.
+    Default,
+    /// A Template file, by absolute path.
+    File(PathBuf),
+}
+
+impl From<String> for TemplateSetting {
+    fn from(s: String) -> Self {
+        if s == "default" {
+            TemplateSetting::Default
+        } else {
+            TemplateSetting::File(s.into())
+        }
+    }
+}
+
+impl From<TemplateSetting> for String {
+    fn from(t: TemplateSetting) -> String {
+        match t {
+            TemplateSetting::Default => "default".into(),
+            TemplateSetting::File(path) => path.display().to_string(),
+        }
+    }
+}
+
+/// Keys are spelled as `config set` takes them. Every command fills in the
+/// defaults and writes them back, so the file shows what's in effect.
 #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Absolute path of the Template file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub template: Option<PathBuf>,
-    /// Overrides the default Comment Key.
+    pub template: Option<TemplateSetting>,
     #[serde(
         default,
         rename = "comment-key",
@@ -23,7 +51,7 @@ pub struct Config {
     pub comment_key: Option<String>,
 }
 
-/// A `config --set` argument: `KEY=VALUE`.
+/// A `config set` argument: `KEY=VALUE`.
 #[derive(Debug, Clone)]
 pub struct Setting {
     key: String,
@@ -45,38 +73,59 @@ impl FromStr for Setting {
 }
 
 impl Config {
-    /// A missing file is an empty Config.
-    pub fn load(path: &Path) -> Result<Config> {
+    /// `None` when the file doesn't exist yet.
+    pub fn read(path: &Path) -> Result<Option<Config>> {
         match fs::read_to_string(path) {
             Ok(json) => serde_json::from_str(&json)
+                .map(Some)
                 .with_context(|| format!("config {} is not valid JSON", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e).with_context(|| format!("reading config {}", path.display())),
         }
     }
 
-    /// Reads a config supplied by `config --load`. Relative Template paths are
+    /// Reads a config supplied by `config load`. Relative Template paths are
     /// resolved against the file's directory, and the Template is checked.
     pub fn from_file(path: &Path) -> Result<Config> {
-        let json = fs::read_to_string(path)
-            .with_context(|| format!("reading config {}", path.display()))?;
-        let mut config: Config = serde_json::from_str(&json)
-            .with_context(|| format!("config {} is not valid JSON", path.display()))?;
-        if let Some(template) = &config.template {
+        let mut config =
+            Config::read(path)?.ok_or_else(|| anyhow!("config {} not found", path.display()))?;
+        if let Some(TemplateSetting::File(template)) = &config.template {
             let base = path.parent().unwrap_or(Path::new("."));
-            config.template = Some(check_template(&base.join(template))?);
+            config.template = Some(TemplateSetting::File(check_template(&base.join(template))?));
         }
         Ok(config)
     }
 
-    /// Applies one `config --set`. A relative Template path resolves against
+    /// Fills unset keys with their defaults. Returns whether anything changed.
+    /// The Comment Key stays unset when there's no default to give it.
+    pub fn fill_defaults(&mut self, comment_key: Option<String>) -> bool {
+        let mut changed = false;
+        if self.template.is_none() {
+            self.template = Some(TemplateSetting::Default);
+            changed = true;
+        }
+        if self.comment_key.is_none() && comment_key.is_some() {
+            self.comment_key = comment_key;
+            changed = true;
+        }
+        changed
+    }
+
+    /// Applies one `config set` value. A relative Template path resolves against
     /// the current directory.
     pub fn set(&mut self, setting: &Setting) -> Result<()> {
         if setting.value.is_empty() {
             bail!("`{}` needs a value", setting.key);
         }
         match setting.key.as_str() {
-            "template" => self.template = Some(check_template(Path::new(&setting.value))?),
+            "template" if setting.value == "default" => {
+                self.template = Some(TemplateSetting::Default)
+            }
+            "template" => {
+                self.template = Some(TemplateSetting::File(check_template(Path::new(
+                    &setting.value,
+                ))?))
+            }
             "comment-key" => self.comment_key = Some(setting.value.clone()),
             other => bail!("unknown config key {other:?}; known keys: template, comment-key"),
         }
@@ -109,17 +158,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_file_is_empty_and_saved_config_reloads() {
+    fn missing_file_reads_as_none_and_saved_config_reloads() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/config.json");
-        assert_eq!(Config::load(&path).unwrap(), Config::default());
+        assert_eq!(Config::read(&path).unwrap(), None);
 
         let config = Config {
-            template: Some("/repo/t.md.j2".into()),
+            template: Some(TemplateSetting::File("/repo/t.md.j2".into())),
             comment_key: Some("prod".into()),
         };
         config.save(&path).unwrap();
-        assert_eq!(Config::load(&path).unwrap(), config);
+        assert_eq!(Config::read(&path).unwrap(), Some(config));
+    }
+
+    #[test]
+    fn fill_defaults_sets_only_missing_keys() {
+        let mut config = Config::default();
+        assert!(config.fill_defaults(Some("wf/job".into())));
+        assert_eq!(config.template, Some(TemplateSetting::Default));
+        assert_eq!(config.comment_key.as_deref(), Some("wf/job"));
+        assert!(!config.fill_defaults(Some("other".into())));
+        assert_eq!(config.comment_key.as_deref(), Some("wf/job"));
+    }
+
+    #[test]
+    fn template_default_round_trips_as_a_string() {
+        let config = Config {
+            template: Some(TemplateSetting::Default),
+            comment_key: None,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert_eq!(json, r#"{"template":"default"}"#);
+        assert_eq!(serde_json::from_str::<Config>(&json).unwrap(), config);
     }
 
     #[test]
@@ -132,7 +202,9 @@ mod tests {
         let config = Config::from_file(&path).unwrap();
         assert_eq!(
             config.template,
-            Some(fs::canonicalize(dir.path().join("ci/t.md.j2")).unwrap())
+            Some(TemplateSetting::File(
+                fs::canonicalize(dir.path().join("ci/t.md.j2")).unwrap()
+            ))
         );
     }
 
@@ -155,8 +227,14 @@ mod tests {
             .set(&format!("template={}", template.display()).parse().unwrap())
             .unwrap();
         config.set(&"comment-key=prod".parse().unwrap()).unwrap();
-        assert_eq!(config.template, Some(fs::canonicalize(&template).unwrap()));
+        assert_eq!(
+            config.template,
+            Some(TemplateSetting::File(fs::canonicalize(&template).unwrap()))
+        );
         assert_eq!(config.comment_key.as_deref(), Some("prod"));
+
+        config.set(&"template=default".parse().unwrap()).unwrap();
+        assert_eq!(config.template, Some(TemplateSetting::Default));
 
         assert!(config.set(&"colour=blue".parse().unwrap()).is_err());
         assert!(config.set(&"comment-key=".parse().unwrap()).is_err());
@@ -168,6 +246,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         fs::write(&path, "not json").unwrap();
-        assert!(Config::load(&path).is_err());
+        assert!(Config::read(&path).is_err());
     }
 }

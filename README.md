@@ -12,7 +12,7 @@ Data Model
 interface Step {
   name: string;
   displayName: string;
-  status: "pending" | string;
+  status: "pending" | "success" | "failure" | string;
   exitCodeStatus: Record<number, string>;
   stdout?: string;
   stderr?: string;
@@ -25,6 +25,8 @@ interface Config {
 
 ```bash
 status-comment --steps 'init,validate,plan,rules-check,apply,party' # creates a table of known steps defaulting to pending state
-status-comment --exit-code-map '0:success,1:failure:2:changes' --execute 'terraform plan'
+status-comment --exit-code-map '0:success,1:failure:2:changes' --execute 'terraform plan' # captures the outputs of the command and the exit codes and maps them to step status's
+echo foo | status-comment # detects step name from env and adds it to the steps list at the end, with a success status
+echo bar | status-comment --step-name "bar step" --status "party"  # specifies the step name and the status while recording the output
 status-comment --template comment.md # updates the saved state with the specified template
 ```

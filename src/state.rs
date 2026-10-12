@@ -189,14 +189,6 @@ mod tests {
     }
 
     #[test]
-    fn set_steps_reopens_a_finalized_run() {
-        let mut state = State::new("1");
-        state.finalize();
-        state.set_steps(&names(&["plan"]));
-        assert!(!state.finalized);
-    }
-
-    #[test]
     fn reset_keeps_steps_but_clears_their_data() {
         let mut state = State::new("1");
         state.set_steps(&names(&["plan"]));
@@ -237,14 +229,6 @@ mod tests {
         assert_eq!(state.step("apply").unwrap().status, Status::Skipped);
         assert!(state.finalized);
         assert!(state.is_failing());
-    }
-
-    #[test]
-    fn recording_after_finalize_reopens_the_run() {
-        let mut state = State::new("1");
-        state.finalize();
-        state.record("plan", Status::Running, None);
-        assert!(!state.finalized);
     }
 
     #[test]

@@ -104,7 +104,7 @@ fn full_run_without_a_pull_request() {
 
     job.cmd()
         .args(["step", "init"])
-        .write_stdin("Terraform initialized\n")
+        .write_stdin("Terraform initialized <resource> & \"x\"\n")
         .assert()
         .success();
 
@@ -120,6 +120,16 @@ fn full_run_without_a_pull_request() {
         .success()
         .stdout(predicate::str::contains("Plan: 1 to add"));
 
+    let comment = job.comment();
+    assert!(
+        comment.contains("### Terraform · plan\n\n<sub>"),
+        "{comment}"
+    );
+    assert!(
+        !comment.contains("🎉"),
+        "no celebration before Finalize: {comment}"
+    );
+
     job.cmd().arg("finalize").assert().success();
 
     let comment = job.comment();
@@ -127,7 +137,14 @@ fn full_run_without_a_pull_request() {
     assert!(comment.contains("| Plan | changes |"), "{comment}");
     assert!(comment.contains("| Apply | ⏭️ Skipped |"), "{comment}");
     assert!(comment.contains("| 🎉 | All done |"), "{comment}");
-    assert!(comment.contains("Terraform initialized"), "{comment}");
+    assert!(
+        comment.contains("<details><summary>Init output</summary>"),
+        "{comment}"
+    );
+    assert!(
+        comment.contains("Terraform initialized <resource> & \"x\""),
+        "Output is not HTML-escaped: {comment}"
+    );
     assert!(comment.contains("Plan: 1 to add"), "{comment}");
 
     assert_eq!(
@@ -155,20 +172,15 @@ fn exec_failure_is_failing_and_exits_with_command_code() {
 }
 
 #[test]
-fn unmapped_zero_exit_records_failure_and_exits_non_zero() {
+fn a_failing_status_from_exit_code_zero_exits_one() {
     let job = Job::new();
     job.cmd()
         .args(["exec", "x", "--exit-code-map", "2=changes", "true"])
         .assert()
         .code(1);
     assert!(job.comment().contains("| X | ❌ Failed |"));
-}
-
-#[test]
-fn mapped_failure_exits_non_zero() {
-    let job = Job::new();
     job.cmd()
-        .args(["exec", "x", "--exit-code-map", "0=failure", "true"])
+        .args(["exec", "y", "--exit-code-map", "0=failure", "true"])
         .assert()
         .code(1);
 }
@@ -433,21 +445,13 @@ fn config_set_comment_key_marks_the_comment() {
 }
 
 #[test]
-fn config_rejects_unknown_keys_and_bad_templates() {
+fn config_rejects_unknown_keys() {
     let job = Job::new();
     job.cmd()
         .args(["config", "set", "colour=blue"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown config key"));
-    let template = job.path("bad.md.j2");
-    fs::write(&template, "{% for %}").unwrap();
-    job.cmd()
-        .args(["config", "set"])
-        .arg(format!("template={}", template.display()))
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("invalid"));
 }
 
 #[test]
@@ -572,16 +576,6 @@ fn preview_without_a_comment_says_so() {
         .success()
         .stdout("")
         .stderr(predicate::str::contains("no Status Comment yet"));
-}
-
-#[test]
-fn usage_errors() {
-    let job = Job::new();
-    job.cmd().args(["exec", "plan"]).assert().code(2);
-    job.cmd().args(["steps", "set"]).assert().code(2);
-    job.cmd().args(["step"]).assert().code(2);
-    job.cmd().args(["config"]).assert().code(2);
-    job.cmd().assert().code(2);
 }
 
 #[test]

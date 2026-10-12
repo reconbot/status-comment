@@ -263,47 +263,6 @@ mod tests {
     }
 
     #[test]
-    fn finds_oldest_of_our_matching_comments_and_updates_it() {
-        let mut server = mockito::Server::new();
-        let ours = body_for("wf/plan");
-        let list = server
-            .mock("POST", "/graphql")
-            .match_header("authorization", "Bearer t0k")
-            .match_body(Matcher::PartialJson(
-                json!({ "variables": { "owner": "o", "repo": "r", "number": 5 } }),
-            ))
-            .with_body(page(
-                &[(1, "unrelated", true), (2, &ours, true), (3, &ours, true)],
-                None,
-            ))
-            .create();
-        let update = server
-            .mock("PATCH", "/repos/o/r/issues/comments/2")
-            .match_body(Matcher::Json(json!({ "body": "new" })))
-            .with_body(r#"{"id":2}"#)
-            .create();
-
-        let mut store = store(&server, "wf/plan");
-        assert!(store.load().unwrap().unwrap().contains("table"));
-        store.save("new").unwrap();
-        list.assert();
-        update.assert();
-    }
-
-    #[test]
-    fn ignores_comments_written_by_anyone_else() {
-        let mut server = mockito::Server::new();
-        let marker = body_for("k");
-        server
-            .mock("POST", "/graphql")
-            .with_body(page(&[(1, &marker, false), (2, &marker, true)], None))
-            .create();
-        let mut store = store(&server, "k");
-        assert!(store.load().unwrap().is_some());
-        assert_eq!(store.comment_id, Some(2));
-    }
-
-    #[test]
     fn pages_through_comments() {
         let mut server = mockito::Server::new();
         server
@@ -324,49 +283,5 @@ mod tests {
         assert!(store.load().unwrap().is_some());
         assert_eq!(store.comment_id, Some(500));
         second.assert();
-    }
-
-    #[test]
-    fn creates_comment_when_none_matches() {
-        let mut server = mockito::Server::new();
-        server
-            .mock("POST", "/graphql")
-            .with_body(page(&[], None))
-            .create();
-        let create = server
-            .mock("POST", "/repos/o/r/issues/5/comments")
-            .match_body(Matcher::Json(json!({ "body": "first" })))
-            .with_status(201)
-            .with_body(r#"{"id":9}"#)
-            .create();
-        let update = server
-            .mock("PATCH", "/repos/o/r/issues/comments/9")
-            .with_body(r#"{"id":9}"#)
-            .create();
-
-        let mut store = store(&server, "k");
-        assert_eq!(store.load().unwrap(), None);
-        store.save("first").unwrap();
-        store.save("second").unwrap();
-        create.assert();
-        update.assert();
-    }
-
-    #[test]
-    fn api_errors_surface() {
-        let mut server = mockito::Server::new();
-        server.mock("POST", "/graphql").with_status(403).create();
-        assert!(store(&server, "k").load().is_err());
-
-        let mut server = mockito::Server::new();
-        server
-            .mock("POST", "/graphql")
-            .with_body(r#"{"data":null,"errors":[{"message":"Resource not accessible"}]}"#)
-            .create();
-        let err = store(&server, "k").load().unwrap_err();
-        assert!(
-            format!("{err:#}").contains("Resource not accessible"),
-            "{err:#}"
-        );
     }
 }

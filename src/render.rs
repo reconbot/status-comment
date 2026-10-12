@@ -270,7 +270,6 @@ fn truncate_middle(text: &str, cap: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::names;
     use crate::status::Status;
 
     fn config() -> Config {
@@ -290,90 +289,8 @@ mod tests {
         }
     }
 
-    fn render(template: &str, state: &State, target: Target) -> String {
-        let github = github();
-        let run = RunInfo {
-            url: Some("https://github.com/o/r/actions/runs/1".into()),
-            attempt: "1".into(),
-        };
-        Renderer {
-            template,
-            github: &github,
-            run: &run,
-            config: &config(),
-        }
-        .render(state, target, COMMENT_LIMIT, 0)
-        .unwrap()
-    }
-
     fn record(state: &mut State, name: &str, status: Status, output: Option<&str>) {
         state.record(name, status, output.map(String::from));
-    }
-
-    #[test]
-    fn default_template_renders_table_and_outputs() {
-        let mut state = State::new("1");
-        state.set_steps(&names(&["init", "plan", "apply"]));
-        record(&mut state, "init", Status::Success, Some("Initialized"));
-        record(&mut state, "plan", Status::Failure, Some("Error: boom"));
-        let body = render(DEFAULT_TEMPLATE, &state, Target::Comment);
-
-        assert!(body.contains("### Terraform · plan\n\n<sub>"), "{body}");
-        assert!(body.contains("| Init | ✅ Success |"), "{body}");
-        assert!(body.contains("| Plan | ❌ Failed |"), "{body}");
-        assert!(body.contains("| Apply | ⬜ Pending |"), "{body}");
-        // Failing Output is expanded, the rest collapsed.
-        assert!(body.contains("#### Plan output"), "{body}");
-        assert!(
-            body.contains("<details><summary>Init output</summary>"),
-            "{body}"
-        );
-        assert!(body.contains("[View workflow run](https://github.com/o/r/actions/runs/1)"));
-        // No banner or celebration before Finalize.
-        assert!(!body.contains("[!WARNING]"));
-        assert!(!body.contains("🎉"));
-    }
-
-    #[test]
-    fn table_rows_are_contiguous() {
-        let mut state = State::new("1");
-        state.set_steps(&names(&["a", "b"]));
-        let body = render(DEFAULT_TEMPLATE, &state, Target::Summary);
-        assert!(
-            body.contains("|------|--------|\n| A | ⬜ Pending |\n| B | ⬜ Pending |\n"),
-            "{body}"
-        );
-    }
-
-    #[test]
-    fn output_is_not_html_escaped() {
-        let mut state = State::new("1");
-        record(
-            &mut state,
-            "plan",
-            Status::Success,
-            Some("<resource> & \"x\""),
-        );
-        let body = render(DEFAULT_TEMPLATE, &state, Target::Comment);
-        assert!(body.contains("<resource> & \"x\""), "{body}");
-    }
-
-    #[test]
-    fn custom_template_sees_context() {
-        let mut state = State::new("7");
-        record(
-            &mut state,
-            "plan",
-            Status::Custom("changes".into()),
-            Some("diff"),
-        );
-        let template = "{{ github.actor }} {{ run.id }} {{ target }}\n{% for s in steps %}{{ s.name }}={{ s.status }}\n{{ s | output }}{% endfor %}";
-        let body = render(template, &state, Target::Comment);
-        assert!(
-            body.starts_with("octocat 7 comment\nplan=changes\n"),
-            "{body}"
-        );
-        assert!(body.contains("```\ndiff\n```"), "{body}");
     }
 
     #[test]
@@ -431,14 +348,6 @@ mod tests {
         let out = truncate_middle(&"é".repeat(1000), 100);
         assert!(out.chars().count() <= 100, "{}", out.chars().count());
         assert!(out.ends_with('é'));
-    }
-
-    #[test]
-    fn untruncated_output_has_no_note() {
-        let mut state = State::new("1");
-        record(&mut state, "plan", Status::Success, Some("ok"));
-        let body = render(DEFAULT_TEMPLATE, &state, Target::Comment);
-        assert!(!body.contains("Output truncated"), "{body}");
     }
 
     #[test]

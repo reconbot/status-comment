@@ -14,3 +14,4 @@ Every invocation is a separate process, possibly in another job or on another ru
 - One writer per Comment Key: concurrent jobs sharing a key lose updates, so order them with `needs:`.
 - The Template isn't part of this state. Its path lives in `config.json` in the state path, set once per job.
 - With no PR there's no comment; it's written to `comment.md` in the state path instead.
+- A comment written by another status-comment version is replaced in place: its State is never read.

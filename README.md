@@ -58,7 +58,7 @@ The first command to run (any but `default-template`) creates `config.json` in t
 | `status.<status>` | `status.success=✅ Success` and the like for each Built-in Status | How a Status is shown. Any Status can have one, e.g. `status.changes='🔍 Changes detected'`; without one, a Custom Status shows as its name. |
 | `step.<step>` | none: the title-cased name (`rules-check` → `Rules Check`) | A Step's display name, e.g. `step.rules-check='OPA Rules'`. |
 
-An empty value (`step.rules-check=`) removes a `status.` or `step.` key, back to its default. Labels live only in the config, never in the comment ([ADR 0002](./docs/adr/0002-presentation-lives-in-the-config.md)), so each job sets its own.
+An empty value (`step.rules-check=`) resets any key to its default. Labels live only in the config, never in the comment ([ADR 0002](./docs/adr/0002-presentation-lives-in-the-config.md)), so each job sets its own.
 
 If using a matrix in your workflow and want different comments you might want to append something from the matrix:
 
@@ -83,13 +83,13 @@ Any Built-in Status can also be set with `step --status` or `--exit-code-map`. A
 
 - `exec` exits `0` unless the Status is Failing. An unmapped exit code passes through; a mapped Failing one exits non-zero.
 - `step` and `exec` append `status=<status>` to `$GITHUB_OUTPUT`.
-- GitHub API errors (fork PRs, missing `pull-requests: write`, rate limits) print a warning annotation and leave the exit code alone.
+- An error reading or writing the Status Comment (fork PRs, missing `pull-requests: write`, rate limits) prints an error annotation and ends status-comment's own work for that call: no comment update, `$GITHUB_OUTPUT` line or job summary. The exit code is left alone, and `exec` still runs its command.
 
 ## How it works
 
 - One Status Comment per Comment Key, found by a hidden marker and updated in place. Only comments written by the same token count, so a copied marker in someone else's comment is ignored.
 - A new run ID starts the Steps fresh; re-run attempts keep them. A run never overwrites a comment already written by a newer run or attempt; it warns instead.
-- A comment written in an older state format is started over.
+- A comment written by another status-comment version is started over, in place.
 - Outputs share GitHub's 65,536-character limit. Failing Steps get priority. A truncated Output keeps whole lines from its start and end, and links to the workflow run, whose log has all of it.
 - The comment and the job summary render from the same Template.
 - Without a PR (e.g. on `push`) the comment is `comment.md` in the state path, and `finalize` still writes the job summary.
@@ -100,7 +100,7 @@ When `GITHUB_ACTIONS` isn't `true`, status-comment runs in **Local Mode** so you
 
 - It never calls GitHub.
 - The state path defaults to the current directory, so you get `./comment.md` and `./config.json`. The Comment Key defaults to `local`.
-- Each command that changes Steps prints the rendered comment to stderr.
+- Each command that changes Steps prints the rendered comment to stderr; warnings and errors are plain stderr lines.
 - A Run ends at `finalize`; the next `steps set`, `step` or `exec` starts a new one.
 
 ```bash
@@ -129,13 +129,13 @@ The hidden JSON at the bottom of the Status Comment. Simplified from [`src/state
 
 ```rust
 struct State {
-    /// The status-comment version that last wrote it, for debugging.
+    /// The status-comment version that wrote it; another version's State is never read.
     version: String,
-    /// A different run ID starts a fresh State. Local Mode uses `local-1`, `local-2`, …
+    /// A different run ID starts a fresh State. Always `local` in Local Mode.
     run_id: String,
     /// The re-run attempt that last wrote it; older runs and attempts never overwrite it.
     attempt: u32,
-    /// Set by `finalize`; cleared by `steps`, `step` or `exec`.
+    /// Set by `finalize`; cleared by every other command that changes Steps.
     finalized: bool,
     steps: Vec<Step>,
 }

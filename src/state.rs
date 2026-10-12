@@ -70,14 +70,39 @@ impl FromStr for StepSpec {
     }
 }
 
+/// The status-comment version, recorded in every state it writes.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Everything about a Run that the Status Comment remembers.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
+    /// The status-comment version that last wrote it, for debugging; empty in states from releases that didn't record it.
+    #[serde(default)]
+    pub version: String,
     pub run_id: String,
+    /// The Run's re-run attempt that last wrote this state.
+    #[serde(default = "first_attempt")]
+    pub attempt: u32,
     #[serde(default)]
     pub finalized: bool,
     #[serde(default)]
     pub steps: Vec<Step>,
+}
+
+fn first_attempt() -> u32 {
+    1
+}
+
+impl Default for State {
+    fn default() -> Self {
+        State {
+            version: VERSION.to_string(),
+            run_id: String::new(),
+            attempt: first_attempt(),
+            finalized: false,
+            steps: Vec::new(),
+        }
+    }
 }
 
 impl State {
@@ -89,10 +114,24 @@ impl State {
     }
 
     /// The previous state if it's the same Run, otherwise a fresh one.
-    pub fn for_run(previous: Option<State>, run_id: &str) -> State {
-        match previous {
+    /// Either way it's now written by `attempt`.
+    pub fn for_run(previous: Option<State>, run_id: &str, attempt: u32) -> State {
+        let mut state = match previous {
             Some(state) if state.run_id == run_id => state,
             _ => State::new(run_id),
+        };
+        state.attempt = attempt;
+        state.version = VERSION.to_string();
+        state
+    }
+
+    /// Whether this state was written by a later Run, or a later attempt of the
+    /// same Run, than `run_id`/`attempt`. Run IDs only grow; non-numeric ones
+    /// (Local Mode) are never newer.
+    pub fn is_newer_than(&self, run_id: &str, attempt: u32) -> bool {
+        match (self.run_id.parse::<u64>(), run_id.parse::<u64>()) {
+            (Ok(theirs), Ok(ours)) => (theirs, self.attempt) > (ours, attempt),
+            _ => false,
         }
     }
 
@@ -301,12 +340,24 @@ mod tests {
         let mut previous = State::new("1");
         previous.record("plan", Status::Success, None);
 
-        let same = State::for_run(Some(previous.clone()), "1");
+        let same = State::for_run(Some(previous.clone()), "1", 2);
         assert_eq!(names(&same), ["plan"]);
+        assert_eq!(same.attempt, 2);
 
-        let fresh = State::for_run(Some(previous), "2");
+        let fresh = State::for_run(Some(previous), "2", 1);
         assert!(fresh.steps.is_empty());
         assert_eq!(fresh.run_id, "2");
+    }
+
+    #[test]
+    fn newer_runs_and_attempts_are_newer() {
+        let state = State::for_run(None, "200", 2);
+        assert!(state.is_newer_than("199", 5));
+        assert!(state.is_newer_than("200", 1));
+        assert!(!state.is_newer_than("200", 2));
+        assert!(!state.is_newer_than("200", 3));
+        assert!(!state.is_newer_than("201", 1));
+        assert!(!State::new("local-3").is_newer_than("local-1", 1));
     }
 
     #[test]

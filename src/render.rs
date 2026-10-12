@@ -11,9 +11,11 @@ use crate::state::State;
 
 pub const DEFAULT_TEMPLATE: &str = include_str!("default_template.md.j2");
 
-/// GitHub's comment body limit. It's undocumented and reports disagree on
-/// characters vs bytes, so budget in bytes.
+/// GitHub's comment body limit, in characters.
 pub const COMMENT_LIMIT: usize = 65_536;
+
+/// Ends the line that replaces the middle of a truncated Output.
+const OMITTED: &str = "omitted by status-comment …";
 /// GitHub's limit for one step's job summary.
 pub const SUMMARY_LIMIT: usize = 1024 * 1024;
 
@@ -82,14 +84,14 @@ impl Renderer<'_> {
     ) -> Result<String> {
         let full: Vec<Option<String>> = state.steps.iter().map(|s| s.output.clone()).collect();
         let body = self.render_with(state, &full, target)?;
-        let mut excess = (body.len() + reserve).saturating_sub(limit);
+        let mut excess = (body.chars().count() + reserve).saturating_sub(limit);
         if excess == 0 {
             return Ok(body);
         }
 
         let lengths: Vec<usize> = full
             .iter()
-            .map(|o| o.as_ref().map_or(0, String::len))
+            .map(|o| o.as_ref().map_or(0, |o| o.chars().count()))
             .collect();
         let failing: Vec<bool> = state.steps.iter().map(|s| s.status.is_failing()).collect();
         let total: usize = lengths.iter().sum();
@@ -102,10 +104,10 @@ impl Renderer<'_> {
             let outputs: Vec<Option<String>> = full
                 .iter()
                 .zip(&caps)
-                .map(|(o, &cap)| o.as_ref().map(|o| truncate_tail(o, cap)))
+                .map(|(o, &cap)| o.as_ref().map(|o| truncate_middle(o, cap)))
                 .collect();
             last = self.render_with(state, &outputs, target)?;
-            let over = (last.len() + reserve).saturating_sub(limit);
+            let over = (last.chars().count() + reserve).saturating_sub(limit);
             if over == 0 {
                 return Ok(last);
             }
@@ -137,16 +139,27 @@ impl Renderer<'_> {
                 .build()
                 .expect("default syntax is valid"),
         );
+        let run_url = self.run.url.clone();
         env.add_filter("output", move |step: Value| -> Value {
             let name = step.get_attr("name").ok();
             let output = name
                 .as_ref()
                 .and_then(Value::as_str)
                 .and_then(|n| by_name.get(n).map(|o| (n, o)));
-            match output {
-                Some((name, text)) => Value::from_safe_string(output_block(name, text)),
-                None => Value::from(""),
+            let Some((name, text)) = output else {
+                return Value::from("");
+            };
+            let mut block = output_block(name, text);
+            // After the end marker, so it's never read back as Output.
+            if text.contains(OMITTED) {
+                block.push_str(&match &run_url {
+                    Some(url) => {
+                        format!("\n\n_Output truncated: the full output is in the [workflow run]({url})._")
+                    }
+                    None => "\n\n_Output truncated._".to_string(),
+                });
             }
+            Value::from_safe_string(block)
         });
         let template = env
             .template_from_str(self.template)
@@ -205,19 +218,50 @@ fn allocate(lengths: &[usize], failing: &[bool], budget: usize) -> Vec<usize> {
     caps
 }
 
-/// Keeps the tail of `text` within `cap` bytes: errors usually come last.
-fn truncate_tail(text: &str, cap: usize) -> String {
-    if text.len() <= cap {
+/// Fits `text` within `cap` characters by keeping whole lines from the start
+/// (where the cause usually is) and the end (where the summary usually is), and
+/// replacing the middle with one line saying how much was left out.
+fn truncate_middle(text: &str, cap: usize) -> String {
+    let len = text.chars().count();
+    if len <= cap {
         return text.to_string();
     }
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
     // Size the note for the worst case; the real count is never longer.
-    let note_len = format!("… ({} bytes truncated)\n", text.len()).len();
-    let keep = cap.saturating_sub(note_len);
-    let mut start = text.len() - keep;
-    while !text.is_char_boundary(start) {
-        start += 1;
+    let budget = cap.saturating_sub(format!("… {len} characters {OMITTED}\n").chars().count());
+
+    let mut head = 0;
+    let mut head_used = 0;
+    while let Some(line) = lines.get(head) {
+        let n = line.chars().count();
+        if head_used + n > budget / 2 {
+            break;
+        }
+        head_used += n;
+        head += 1;
     }
-    format!("… ({start} bytes truncated)\n{}", &text[start..])
+    let mut tail = lines.len();
+    let mut tail_used = 0;
+    while tail > head {
+        let n = lines[tail - 1].chars().count();
+        if head_used + tail_used + n > budget {
+            break;
+        }
+        tail_used += n;
+        tail -= 1;
+    }
+
+    if head == 0 && tail == lines.len() {
+        // No line fits whole (e.g. one huge line): keep the last characters.
+        let kept: String = text.chars().skip(len - budget).collect();
+        return format!("… {} characters {OMITTED}\n{kept}", len - budget);
+    }
+    format!(
+        "{}… {} lines {OMITTED}\n{}",
+        lines[..head].concat(),
+        tail - head,
+        lines[tail..].concat()
+    )
 }
 
 #[cfg(test)]
@@ -323,18 +367,22 @@ mod tests {
     }
 
     #[test]
-    fn large_outputs_are_truncated_to_fit_keeping_the_tail() {
+    fn large_outputs_keep_head_and_tail_and_link_to_the_run() {
         let mut state = State::new("1");
-        let big = format!("{}THE ERROR", "x".repeat(100_000));
+        let lines: String = (0..20_000).map(|i| format!("line {i}\n")).collect();
+        let big = format!("ROOT CAUSE\n{lines}THE ERROR\n");
         record(&mut state, "plan", Status::Failure, Some(&big));
         record(
             &mut state,
             "init",
             Status::Success,
-            Some(&"y".repeat(100_000)),
+            Some(&"y\n".repeat(50_000)),
         );
         let github = github();
-        let run = RunInfo::default();
+        let run = RunInfo {
+            url: Some("https://github.com/o/r/actions/runs/1".into()),
+            attempt: "1".into(),
+        };
         let body = Renderer {
             template: DEFAULT_TEMPLATE,
             github: &github,
@@ -342,9 +390,44 @@ mod tests {
         }
         .render(&state, Target::Comment, COMMENT_LIMIT, 1000)
         .unwrap();
-        assert!(body.len() + 1000 <= COMMENT_LIMIT, "{}", body.len());
+        assert!(body.chars().count() + 1000 <= COMMENT_LIMIT);
+        assert!(body.contains("ROOT CAUSE"));
         assert!(body.contains("THE ERROR"));
-        assert!(body.contains("bytes truncated"));
+        assert!(body.contains(&format!("lines {OMITTED}")));
+        assert!(body.contains(
+            "_Output truncated: the full output is in the [workflow run](https://github.com/o/r/actions/runs/1)._"
+        ));
+    }
+
+    #[test]
+    fn truncation_cuts_between_whole_lines() {
+        let text: String = (0..100).map(|i| format!("line {i}\n")).collect();
+        let out = truncate_middle(&text, 200);
+        assert!(out.chars().count() <= 200, "{}", out.chars().count());
+        assert!(out.starts_with("line 0\n"));
+        assert!(out.ends_with("line 99\n"));
+        for line in out.lines().filter(|l| !l.contains(OMITTED)) {
+            assert!(line.starts_with("line "), "partial line {line:?}");
+        }
+        assert_eq!(truncate_middle("short", 50), "short");
+    }
+
+    #[test]
+    fn truncation_counts_characters_not_bytes() {
+        // 100 two-byte characters fit a 100-character budget untouched.
+        let text = "é".repeat(100);
+        assert_eq!(truncate_middle(&text, 100), text);
+        let out = truncate_middle(&"é".repeat(1000), 100);
+        assert!(out.chars().count() <= 100, "{}", out.chars().count());
+        assert!(out.ends_with('é'));
+    }
+
+    #[test]
+    fn untruncated_output_has_no_note() {
+        let mut state = State::new("1");
+        record(&mut state, "plan", Status::Success, Some("ok"));
+        let body = render(DEFAULT_TEMPLATE, &state, Target::Comment);
+        assert!(!body.contains("Output truncated"), "{body}");
     }
 
     #[test]
@@ -356,14 +439,5 @@ mod tests {
         );
         // Small outputs keep everything and give their spare share to bigger ones.
         assert_eq!(allocate(&[5, 100], &[false, false], 60), [5, 55]);
-    }
-
-    #[test]
-    fn truncate_tail_respects_char_boundaries() {
-        let text = "é".repeat(100);
-        let out = truncate_tail(&text, 50);
-        assert!(out.len() <= 50, "{}", out.len());
-        assert!(out.ends_with('é'));
-        assert_eq!(truncate_tail("short", 50), "short");
     }
 }

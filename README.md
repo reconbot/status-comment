@@ -78,9 +78,10 @@ Any Built-in Status can also be set with `step --status` or `--exit-code-map`; `
 
 ## How it works
 
-- One Status Comment per Comment Key, found by a hidden marker and updated in place.
-- A new run ID starts the Steps fresh; re-run attempts keep them.
-- Outputs share one size budget. Failing Steps get priority; truncation keeps the tail.
+- One Status Comment per Comment Key, found by a hidden marker and updated in place. Only comments written by the same token count, so a copied marker in someone else's comment is ignored.
+- A new run ID starts the Steps fresh; re-run attempts keep them. A run never overwrites a comment already written by a newer run or attempt; it warns instead.
+- A comment written in an older state format is started over.
+- Outputs share GitHub's 65,536-character limit. Failing Steps get priority. A truncated Output keeps whole lines from its start and end, and links to the workflow run, whose log has all of it.
 - The comment and the job summary render from the same Template.
 - Without a PR (e.g. on `push`) the comment is `comment.md` in the state path, and `finalize` still writes the job summary.
 
@@ -119,8 +120,12 @@ The hidden JSON at the bottom of the Status Comment. Simplified from [`src/state
 
 ```rust
 struct State {
+    /// The status-comment version that last wrote it, for debugging.
+    version: String,
     /// A different run ID starts a fresh State. Local Mode uses `local-1`, `local-2`, …
     run_id: String,
+    /// The re-run attempt that last wrote it; older runs and attempts never overwrite it.
+    attempt: u32,
     /// Set by `finalize`; cleared by `steps`, `step` or `exec`.
     finalized: bool,
     steps: Vec<Step>,
@@ -155,14 +160,18 @@ In a workflow, this repo is also an action that installs the binary and puts it 
 ```yaml
 permissions:
   pull-requests: write
+env:
+  GITHUB_TOKEN: ${{ github.token }}   # job-level, so the end-of-job finalize sees it too
 steps:
   - uses: reconbot/status-comment@vX.Y.Z   # a release tag
   - run: status-comment steps set build test
-    env:
-      GITHUB_TOKEN: ${{ github.token }}
+  - run: status-comment exec build 'cargo build'
+  - run: status-comment exec test 'cargo test'
 ```
 
-It installs the release matching the tag you use, or the latest release otherwise (set `with: version: vX.Y.Z` when pinning to a commit SHA). Builds exist for Linux x86_64, Linux arm64 and macOS arm64; each release also has them as `status-comment-<target>.tar.gz`.
+It installs the release matching the tag you use, or the latest release otherwise (set `with: version: vX.Y.Z` when pinning to a commit SHA).
+
+At the end of the job, even a failed one, the action runs `status-comment finalize` for you. It does nothing if no Steps were recorded, and never fails the job. Set `with: finalize: false` to call `finalize` yourself instead. Builds exist for Linux x86_64, Linux arm64 and macOS arm64; each release also has them as `status-comment-<target>.tar.gz`.
 
 Locally: `cargo install status-comment`.
 

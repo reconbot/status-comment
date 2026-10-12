@@ -17,6 +17,7 @@ pub struct GithubEnv {
     pub actor: Option<String>,
     pub server_url: String,
     pub api_url: String,
+    pub graphql_url: String,
     pub token: Option<String>,
     pub pull_request: Option<PullRequest>,
     pub runner_temp: PathBuf,
@@ -56,6 +57,8 @@ impl GithubEnv {
             actor: var("GITHUB_ACTOR"),
             server_url: var("GITHUB_SERVER_URL").unwrap_or_else(|| "https://github.com".into()),
             api_url: var("GITHUB_API_URL").unwrap_or_else(|| "https://api.github.com".into()),
+            graphql_url: var("GITHUB_GRAPHQL_URL")
+                .unwrap_or_else(|| "https://api.github.com/graphql".into()),
             token: var("GITHUB_TOKEN"),
             pull_request,
             runner_temp: var("RUNNER_TEMP")

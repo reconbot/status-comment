@@ -1,5 +1,5 @@
 name: status-comment
-description: Install the status-comment CLI, which keeps a PR comment up to date with a job's steps
+description: Install the status-comment CLI, which keeps a pull request comment up to date with a job's steps
 branding:
   icon: message-square
   color: blue

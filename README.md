@@ -156,13 +156,13 @@ In a workflow, this repo is also an action that installs the binary and puts it 
 permissions:
   pull-requests: write
 steps:
-  - uses: reconbot/status-comment@v0.1.0
+  - uses: reconbot/status-comment@vX.Y.Z   # a release tag
   - run: status-comment steps set build test
     env:
       GITHUB_TOKEN: ${{ github.token }}
 ```
 
-It installs the release matching the tag you use, or the latest release otherwise (set `with: version: v0.1.0` when pinning to a commit SHA). Builds exist for Linux x86_64, Linux arm64 and macOS arm64; each release also has them as `status-comment-<target>.tar.gz`.
+It installs the release matching the tag you use, or the latest release otherwise (set `with: version: vX.Y.Z` when pinning to a commit SHA). Builds exist for Linux x86_64, Linux arm64 and macOS arm64; each release also has them as `status-comment-<target>.tar.gz`.
 
 Locally: `cargo install status-comment`.
 

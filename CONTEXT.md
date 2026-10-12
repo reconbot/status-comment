@@ -1,6 +1,6 @@
 # Status Comment
 
-A CLI that a pull request comment up to date with the Steps of a GitHub Actions job.
+A CLI that keeps a pull request comment up to date with the Steps of a GitHub Actions job.
 
 ## Language
 
@@ -45,7 +45,15 @@ Which Status Comment an invocation updates. A config setting, defaulting to work
 _Avoid_: Comment ID
 
 **Template**:
-The minijinja layout that renders a Status Comment: the built-in default, or a user's file.
+The minijinja layout that renders a Status Comment: the Default Template, or a user's file. The Default Template is built in and spelled `default` in the Config.
+
+**Config**:
+The per-job settings later invocations read back: which Template and which Comment Key. Created with every default written in.
+_Avoid_: settings, options
+
+**State Path**:
+The directory holding the Config, and the Status Comment when there's no PR to post it on.
+_Avoid_: state dir, temp dir
 
 **Run**:
 One workflow run, identified by its run ID. A Status Comment shows one Run; a new Run starts it fresh, a re-run attempt carries on.
@@ -56,7 +64,7 @@ The invocation that closes out a Run: unrun Steps become `skipped`, the overall 
 _Avoid_: Post-job
 
 **Reset**:
-The invocation that starts every Step over: back to `pending`, Output cleared, the Run reopened. The Steps themselves stay.
+Starting every Step over: back to `pending`, Output cleared, the Run reopened. The Steps themselves stay.
 _Avoid_: clear, restart
 
 **Local Mode**:

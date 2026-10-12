@@ -233,7 +233,7 @@ fn new_run_resets_steps() {
 }
 
 #[test]
-fn steps_set_rewrites_the_list_with_display_names_and_reopens_the_run() {
+fn steps_set_rewrites_the_list_and_reopens_the_run() {
     let job = Job::new();
     job.cmd()
         .args(["steps", "set", "init", "plan", "apply"])
@@ -244,7 +244,11 @@ fn steps_set_rewrites_the_list_with_display_names_and_reopens_the_run() {
     assert!(job.comment().contains("🎉"));
 
     job.cmd()
-        .args(["steps", "set", "rules-check=OPA Rules", "init"])
+        .args(["config", "set", "step.rules-check=OPA Rules"])
+        .assert()
+        .success();
+    job.cmd()
+        .args(["steps", "set", "rules-check", "init"])
         .assert()
         .success();
     let comment = job.comment();
@@ -257,6 +261,34 @@ fn steps_set_rewrites_the_list_with_display_names_and_reopens_the_run() {
         !comment.contains("🎉"),
         "reopened Run must not celebrate: {comment}"
     );
+}
+
+#[test]
+fn status_labels_come_from_the_config() {
+    let job = Job::new();
+    job.cmd()
+        .args([
+            "config",
+            "set",
+            "status.changes=🔍 Changes detected",
+            "status.failure=💥 Broken",
+        ])
+        .assert()
+        .success();
+    job.cmd()
+        .args(["step", "plan", "--status", "changes"])
+        .assert()
+        .success();
+    job.cmd()
+        .args(["step", "lint", "--status", "failure"])
+        .assert()
+        .success();
+    let comment = job.comment();
+    assert!(
+        comment.contains("| Plan | 🔍 Changes detected |"),
+        "{comment}"
+    );
+    assert!(comment.contains("| Lint | 💥 Broken |"), "{comment}");
 }
 
 #[test]
@@ -339,7 +371,11 @@ fn config_set_comment_key_marks_the_comment() {
         .args(["config", "list"])
         .assert()
         .success()
-        .stdout("{\n  \"template\": \"default\",\n  \"comment-key\": \"Terraform/plan\"\n}\n");
+        .stdout(predicate::str::contains(r#""template": "default""#))
+        .stdout(predicate::str::contains(
+            r#""comment-key": "Terraform/plan""#,
+        ))
+        .stdout(predicate::str::contains(r#""failure": "❌ Failed""#));
     job.cmd()
         .args(["config", "set", "comment-key=prod"])
         .assert()
@@ -500,7 +536,6 @@ fn usage_errors() {
     let job = Job::new();
     job.cmd().args(["exec", "plan"]).assert().code(2);
     job.cmd().args(["steps", "set"]).assert().code(2);
-    job.cmd().args(["steps", "set", "plan="]).assert().code(2);
     job.cmd().args(["step"]).assert().code(2);
     job.cmd().args(["config"]).assert().code(2);
     job.cmd().assert().code(2);

@@ -1,11 +1,3 @@
-{%- set icons = {
-  "pending": "⬜", "running": "⏳", "success": "✅",
-  "failure": "❌", "skipped": "⏭️", "cancelled": "🚫",
-} -%}
-{%- set labels = {
-  "pending": "Pending", "running": "Running…", "success": "Success",
-  "failure": "Failed", "skipped": "Skipped", "cancelled": "Cancelled",
-} -%}
 {% if target == "comment" %}
 ### {{ github.workflow or "Status" }}{{ (" · " ~ github.job) if github.job else "" }}
 
@@ -20,7 +12,7 @@
 | Step | Status |
 |------|--------|
 {% for step in steps %}
-| {{ step.display_name | replace("|", "\\|") }} | {% if step.builtin %}{{ icons[step.status] }} {{ labels[step.status] }}{% else %}{{ step.status }}{% endif %} |
+| {{ step.display_name | replace("|", "\\|") }} | {{ step.status_label | replace("|", "\\|") }} |
 {% endfor %}
 {% if run.finalized and not run.failing %}
 | 🎉 | All done |

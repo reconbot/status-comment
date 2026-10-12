@@ -5,8 +5,11 @@ Keeps a pull request comment up to date with a GitHub Actions job's Steps: each 
 ## Usage
 
 ```bash
-# Set the Steps, in order; `name=Display Name` sets a label
-status-comment steps set init validate plan rules-check='OPA Rules' apply
+# Set the Steps, in order
+status-comment steps set init validate plan rules-check apply
+
+# Name a Step and label a Custom Status
+status-comment config set step.rules-check='OPA Rules' status.changes='🔍 Changes detected'
 
 # Use your own Template
 status-comment config set template=.github/terraform-comment.md.j2
@@ -31,7 +34,7 @@ status-comment preview
 
 | Command | What it does |
 |---|---|
-| `steps set <name[=Display Name]>...` | Set the Run's Steps, in order. Unlisted Steps are removed; listed ones keep their Status; new ones start `pending`. Reopens a finalized Run. |
+| `steps set <name>...` | Set the Run's Steps, in order. Unlisted Steps are removed; listed ones keep their Status; new ones start `pending`. Reopens a finalized Run. |
 | `steps --reset-status` | Set every Step back to `pending` and clear its Output. Reopens a finalized Run. With `set` (`steps set a b --reset-status`), the list is applied first. |
 | `step <name> [--status <status>]` | Set a Step's Status (default `success`). Piped stdin becomes its Output. Unknown Steps are appended. |
 | `exec <name> <command> [--exit-code-map <code=status,…>]` | Mark the Step `running`, run `<command>` under `bash -o pipefail`, set the Status from the exit code. Default map: `0=success`; unmapped codes are `failure`. |
@@ -52,6 +55,8 @@ The first command to run (any but `default-template`) creates `config.json` in t
 |---|---|---|
 | `template` | `default` | `default` for the built-in Template, or a Template file path, saved as absolute. Later edits to the file apply. |
 | `comment-key` | "$GITHUB_WORKFLOW/$GITHUB_JOB" on GitHub; `local` in Local Mode | Key to find the comment to update. |
+| `status.<status>` | `status.success=✅ Success` and the like for each Built-in Status | How a Status is shown. Any Status can have one, e.g. `status.changes='🔍 Changes detected'`; without one, a Custom Status shows as its name. |
+| `step.<step>` | none: the title-cased name (`rules-check` → `Rules Check`) | A Step's display name, e.g. `step.rules-check='OPA Rules'`. |
 
 If using a matrix in your workflow and want different comments you might want to append something from the matrix:
 
@@ -107,7 +112,7 @@ Templates are [minijinja](https://github.com/mitsuhiko/minijinja) (Jinja2) files
 
 | Variable | Contents |
 |---|---|
-| `steps[]` | `name`, `display_name`, `status`, `failing`, `builtin`, `has_output` |
+| `steps[]` | `name`, `display_name` and `status_label` (from the config), `status`, `failing`, `builtin`, `has_output` |
 | `run` | `id`, `attempt`, `url`, `failing`, `finalized` |
 | `github` | `workflow`, `job`, `actor`, `repository`, `sha`, `short_sha`, `pr_number`, `pr_url`, `server_url`, `updated_at` |
 | `target` | `"comment"` or `"summary"` |
@@ -134,8 +139,6 @@ struct State {
 struct Step {
     /// Identity, from `steps set`, `step` or `exec`.
     name: String,
-    /// Label: from `steps set name=Label`, or the title-cased name.
-    display_name: String,
     status: Status,
     /// Merged stdout and stderr. Never serialized: it lives only in the rendered comment.
     output: Option<String>,

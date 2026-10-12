@@ -392,10 +392,7 @@ pub fn run(cli: Cli, env: &GithubEnv, stdin: Option<String>) -> Result<i32> {
             state.record(name, Status::Running, None);
             publish(&state)?;
             let executed = execute(command, &mut std::io::stdout())?;
-            let status = exit_code_map
-                .get(executed.exit_code)
-                .cloned()
-                .unwrap_or(Status::Failure);
+            let status = exit_code_map.status_for(executed.exit_code);
             if status.is_failing() {
                 exit_code = if executed.exit_code == 0 {
                     1

@@ -330,6 +330,26 @@ fn an_empty_value_resets_a_label() {
 }
 
 #[test]
+fn an_empty_value_resets_the_template_and_comment_key() {
+    let job = Job::new();
+    let template = job.path("t.md.j2");
+    fs::write(&template, "custom").unwrap();
+    job.cmd()
+        .args(["config", "set", "comment-key=prod"])
+        .arg(format!("template={}", template.display()))
+        .assert()
+        .success();
+    job.cmd()
+        .args(["config", "set", "comment-key=", "template="])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""template": "default""#))
+        .stdout(predicate::str::contains(
+            r#""comment-key": "Terraform/plan""#,
+        ));
+}
+
+#[test]
 fn a_later_label_relabels_the_comment() {
     let job = Job::new();
     job.cmd().args(["step", "plan"]).assert().success();

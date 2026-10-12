@@ -73,7 +73,6 @@ impl From<TemplateSetting> for String {
 /// Keys are spelled as `config set` takes them. Every command fills in the
 /// defaults and writes them back, so the file shows what's in effect.
 #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<TemplateSetting>,
@@ -125,13 +124,13 @@ impl Config {
     }
 
     /// Reads a config supplied by `config load`. Relative Template paths are
-    /// resolved against the file's directory, and the Template is checked.
+    /// resolved against the file's directory.
     pub fn from_file(path: &Path) -> Result<Config> {
         let mut config =
             Config::read(path)?.ok_or_else(|| anyhow!("config {} not found", path.display()))?;
         if let Some(TemplateSetting::File(template)) = &config.template {
             let base = path.parent().unwrap_or(Path::new("."));
-            config.template = Some(TemplateSetting::File(check_template(&base.join(template))?));
+            config.template = Some(TemplateSetting::File(template_path(&base.join(template))?));
         }
         Ok(config)
     }
@@ -173,30 +172,22 @@ impl Config {
             .unwrap_or_else(|| display_name_for(name))
     }
 
-    /// Applies one `config set` value. A relative Template path resolves against
-    /// the current directory.
+    /// Applies one `config set` value; an empty one resets the key to its default.
+    /// A relative Template path resolves against the current directory.
     pub fn set(&mut self, setting: &Setting) -> Result<()> {
         let value = (!setting.value.is_empty()).then(|| setting.value.clone());
         match setting.key.as_str() {
-            "template" | "comment-key" if value.is_none() => {
-                bail!("`{}` needs a value", setting.key)
-            }
-            "template" if setting.value == "default" => {
-                self.template = Some(TemplateSetting::Default)
-            }
             "template" => {
-                self.template = Some(TemplateSetting::File(check_template(Path::new(
-                    &setting.value,
-                ))?))
+                self.template = match value.as_deref() {
+                    None => None,
+                    Some("default") => Some(TemplateSetting::Default),
+                    Some(path) => Some(TemplateSetting::File(template_path(Path::new(path))?)),
+                }
             }
-            "comment-key" => self.comment_key = Some(setting.value.clone()),
+            "comment-key" => self.comment_key = value,
             key => match key.split_once('.') {
-                Some(("status", status)) if !status.is_empty() => {
-                    set_or_remove(&mut self.status_labels, status, value)
-                }
-                Some(("step", step)) if !step.is_empty() => {
-                    set_or_remove(&mut self.step_names, step, value)
-                }
+                Some(("status", status)) => set_or_remove(&mut self.status_labels, status, value),
+                Some(("step", step)) => set_or_remove(&mut self.step_names, step, value),
                 _ => bail!(
                     "unknown config key {key:?}; known keys: template, comment-key, status.<status>, step.<step>"
                 ),
@@ -214,16 +205,9 @@ impl Config {
     }
 }
 
-/// The Template's absolute path, once it's known to exist and parse.
-pub fn check_template(path: &Path) -> Result<PathBuf> {
-    let path =
-        fs::canonicalize(path).with_context(|| format!("reading Template {}", path.display()))?;
-    let source = fs::read_to_string(&path)
-        .with_context(|| format!("reading Template {}", path.display()))?;
-    minijinja::Environment::new()
-        .template_from_str(&source)
-        .with_context(|| format!("Template {} is invalid", path.display()))?;
-    Ok(path)
+/// The Template's absolute path, once it's known to exist.
+fn template_path(path: &Path) -> Result<PathBuf> {
+    fs::canonicalize(path).with_context(|| format!("reading Template {}", path.display()))
 }
 
 #[cfg(test)]

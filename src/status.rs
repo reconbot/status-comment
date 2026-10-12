@@ -1,12 +1,10 @@
 use std::fmt;
-use std::str::FromStr;
 
-use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 /// The current state of a Step: either a Built-in Status or a Custom Status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[serde(from = "String", into = "String")]
 pub enum Status {
     Pending,
     Running,
@@ -36,18 +34,9 @@ impl Status {
     }
 }
 
-impl FromStr for Status {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        // `=` and `,` are separators in an Exit Code Map.
-        if s.is_empty()
-            || s.chars()
-                .any(|c| c.is_whitespace() || c.is_control() || c == '=' || c == ',')
-        {
-            bail!("invalid status {s:?}: must be non-empty with no whitespace, `=` or `,`");
-        }
-        Ok(match s {
+impl From<&str> for Status {
+    fn from(s: &str) -> Self {
+        match s {
             "pending" => Status::Pending,
             "running" => Status::Running,
             "success" => Status::Success,
@@ -55,15 +44,13 @@ impl FromStr for Status {
             "skipped" => Status::Skipped,
             "cancelled" => Status::Cancelled,
             other => Status::Custom(other.to_string()),
-        })
+        }
     }
 }
 
-impl TryFrom<String> for Status {
-    type Error = anyhow::Error;
-
-    fn try_from(s: String) -> Result<Self> {
-        s.parse()
+impl From<String> for Status {
+    fn from(s: String) -> Self {
+        s.as_str().into()
     }
 }
 

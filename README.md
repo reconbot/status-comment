@@ -58,11 +58,15 @@ The first command to run (any but `default-template`) creates `config.json` in t
 | `status.<status>` | `status.success=✅ Success` and the like for each Built-in Status | How a Status is shown. Any Status can have one, e.g. `status.changes='🔍 Changes detected'`; without one, a Custom Status shows as its name. |
 | `step.<step>` | none: the title-cased name (`rules-check` → `Rules Check`) | A Step's display name, e.g. `step.rules-check='OPA Rules'`. |
 
+An empty value (`step.rules-check=`) removes a `status.` or `step.` key, back to its default. Labels live only in the config, never in the comment ([ADR 0002](./docs/adr/0002-presentation-lives-in-the-config.md)), so each job sets its own.
+
 If using a matrix in your workflow and want different comments you might want to append something from the matrix:
 
 ```bash
 status-comment config set comment-key="$GITHUB_WORKFLOW/$GITHUB_JOB/${{ matrix.dir }}"
 ```
+
+Jobs that share a Comment Key each need the same labels; keep them in a checked-in file and run `status-comment config load .github/status-comment.json` in every job.
 
 ## Statuses and exit codes
 
@@ -75,7 +79,7 @@ status-comment config set comment-key="$GITHUB_WORKFLOW/$GITHUB_JOB/${{ matrix.d
 | `skipped` | Never ran | `finalize`, from `pending` | |
 | `cancelled` | Interrupted | `finalize`, from `running` | ✓ |
 
-Any Built-in Status can also be set with `step --status` or `--exit-code-map`; `canceled` means `cancelled`. Anything else is a Custom Status (e.g. `changes`): no meaning to the tool, never Failing, rendered by the Template.
+Any Built-in Status can also be set with `step --status` or `--exit-code-map`. Anything else is a Custom Status (e.g. `changes`): no meaning to the tool, never Failing, rendered by the Template.
 
 - `exec` exits `0` unless the Status is Failing. An unmapped exit code passes through; a mapped Failing one exits non-zero.
 - `step` and `exec` append `status=<status>` to `$GITHUB_OUTPUT`.
@@ -112,7 +116,7 @@ Templates are [minijinja](https://github.com/mitsuhiko/minijinja) (Jinja2) files
 
 | Variable | Contents |
 |---|---|
-| `steps[]` | `name`, `display_name` and `status_label` (from the config), `status`, `failing`, `builtin`, `has_output` |
+| `steps[]` | `name`, `display_name` and `status_label` (from the config), `status`, `failing`, `has_output` |
 | `run` | `id`, `attempt`, `url`, `failing`, `finalized` |
 | `github` | `workflow`, `job`, `actor`, `repository`, `sha`, `short_sha`, `pr_number`, `pr_url`, `server_url`, `updated_at` |
 | `target` | `"comment"` or `"summary"` |
@@ -151,7 +155,7 @@ enum Status {
     Success,
     Failure,
     Skipped,
-    Cancelled,      // also parses "canceled"
+    Cancelled,
     Custom(String), // e.g. "changes"
 }
 ```

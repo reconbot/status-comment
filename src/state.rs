@@ -22,21 +22,6 @@ impl Step {
     }
 }
 
-/// `rules-check` → `Rules Check`.
-pub fn display_name_for(name: &str) -> String {
-    name.split(['-', '_', ' '])
-        .filter(|w| !w.is_empty())
-        .map(|w| {
-            let mut chars = w.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().chain(chars).collect(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<String>>()
-        .join(" ")
-}
-
 /// The status-comment version, recorded in every state it writes.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -182,14 +167,6 @@ mod tests {
 
     fn step_names(state: &State) -> Vec<&str> {
         state.steps.iter().map(|s| s.name.as_str()).collect()
-    }
-
-    #[test]
-    fn display_names_are_title_cased() {
-        assert_eq!(display_name_for("rules-check"), "Rules Check");
-        assert_eq!(display_name_for("plan"), "Plan");
-        assert_eq!(display_name_for("bar step"), "Bar Step");
-        assert_eq!(display_name_for("tf_apply"), "Tf Apply");
     }
 
     #[test]

@@ -55,7 +55,6 @@ struct StepView<'a> {
     status: &'a str,
     status_label: String,
     failing: bool,
-    builtin: bool,
     has_output: bool,
 }
 
@@ -179,7 +178,6 @@ impl Renderer<'_> {
                 status: s.status.as_str(),
                 status_label: self.config.status_label(s.status.as_str()),
                 failing: s.status.is_failing(),
-                builtin: s.status.is_builtin(),
                 has_output: o.is_some(),
             })
             .collect();

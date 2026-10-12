@@ -183,7 +183,7 @@ fn step_sets_status_and_never_fails() {
         .success();
     assert!(job.comment().contains("#### Bar output"));
     job.cmd()
-        .args(["step", "apply", "--status", "canceled"])
+        .args(["step", "apply", "--status", "cancelled"])
         .assert()
         .success();
     assert!(job.comment().contains("| Apply | 🚫 Cancelled |"));
@@ -289,6 +289,49 @@ fn status_labels_come_from_the_config() {
         "{comment}"
     );
     assert!(comment.contains("| Lint | 💥 Broken |"), "{comment}");
+}
+
+#[test]
+fn an_empty_value_resets_a_label() {
+    let job = Job::new();
+    job.cmd()
+        .args([
+            "config",
+            "set",
+            "step.plan=Terraform Plan",
+            "status.failure=💥 Broken",
+        ])
+        .assert()
+        .success();
+    job.cmd()
+        .args(["config", "set", "step.plan=", "status.failure="])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Terraform Plan").not())
+        .stdout(predicate::str::contains("❌ Failed"));
+    job.cmd()
+        .args(["step", "plan", "--status", "failure"])
+        .assert()
+        .success();
+    let comment = job.comment();
+    assert!(comment.contains("| Plan | ❌ Failed |"), "{comment}");
+}
+
+#[test]
+fn a_later_label_relabels_the_comment() {
+    let job = Job::new();
+    job.cmd().args(["step", "plan"]).assert().success();
+    assert!(job.comment().contains("| Plan | ✅ Success |"));
+    job.cmd()
+        .args(["config", "set", "step.plan=Terraform Plan"])
+        .assert()
+        .success();
+    job.cmd().args(["step", "apply"]).assert().success();
+    let comment = job.comment();
+    assert!(
+        comment.contains("| Terraform Plan | ✅ Success |\n| Apply | ✅ Success |\n"),
+        "{comment}"
+    );
 }
 
 #[test]

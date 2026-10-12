@@ -23,10 +23,6 @@ impl Status {
         matches!(self, Status::Failure | Status::Cancelled)
     }
 
-    pub fn is_builtin(&self) -> bool {
-        !matches!(self, Status::Custom(_))
-    }
-
     pub fn as_str(&self) -> &str {
         match self {
             Status::Pending => "pending",
@@ -57,8 +53,7 @@ impl FromStr for Status {
             "success" => Status::Success,
             "failure" => Status::Failure,
             "skipped" => Status::Skipped,
-            // GitHub spells it `cancelled`; accept the American spelling as an alias.
-            "cancelled" | "canceled" => Status::Cancelled,
+            "cancelled" => Status::Cancelled,
             other => Status::Custom(other.to_string()),
         })
     }
@@ -89,11 +84,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canceled_is_an_alias_of_cancelled() {
-        assert_eq!("canceled".parse::<Status>().unwrap(), Status::Cancelled);
-    }
-
-    #[test]
     fn only_failure_and_cancelled_are_failing() {
         assert!(Status::Failure.is_failing());
         assert!(Status::Cancelled.is_failing());
@@ -121,7 +111,7 @@ mod tests {
     fn serializes_as_plain_string() {
         let json = serde_json::to_string(&Status::Custom("changes".into())).unwrap();
         assert_eq!(json, "\"changes\"");
-        let back: Status = serde_json::from_str("\"canceled\"").unwrap();
+        let back: Status = serde_json::from_str("\"cancelled\"").unwrap();
         assert_eq!(back, Status::Cancelled);
     }
 }

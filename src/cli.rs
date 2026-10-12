@@ -252,13 +252,14 @@ pub fn run(cli: Cli, env: &GithubEnv, stdin: Option<String>) -> Result<i32> {
     } else {
         Some("local".to_string())
     };
-    changed |= config.fill_defaults(default_key);
+    // Settings first, so an emptied built-in label gets its default back.
     if let Command::Config(ConfigCommand::Set { settings }) = &cli.command {
         for setting in settings {
             config.set(setting)?;
             changed = true;
         }
     }
+    changed |= config.fill_defaults(default_key);
     if changed {
         config.save(&config_path)?;
     }

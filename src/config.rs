@@ -8,8 +8,6 @@ use std::str::FromStr;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::state::display_name_for;
-
 /// How each Built-in Status is shown until `config set status.<name>=…` changes it.
 const BUILT_IN_STATUS_LABELS: [(&str, &str); 6] = [
     ("pending", "⬜ Pending"),
@@ -19,6 +17,29 @@ const BUILT_IN_STATUS_LABELS: [(&str, &str); 6] = [
     ("skipped", "⏭️ Skipped"),
     ("cancelled", "🚫 Cancelled"),
 ];
+
+/// `rules-check` → `Rules Check`.
+fn display_name_for(name: &str) -> String {
+    name.split(['-', '_', ' '])
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
+/// An empty value removes the key, so the fallback applies again.
+fn set_or_remove(map: &mut BTreeMap<String, String>, key: &str, value: Option<String>) {
+    match value {
+        Some(value) => map.insert(key.to_string(), value),
+        None => map.remove(key),
+    };
+}
 
 /// Which Template renders the Status Comment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,10 +176,11 @@ impl Config {
     /// Applies one `config set` value. A relative Template path resolves against
     /// the current directory.
     pub fn set(&mut self, setting: &Setting) -> Result<()> {
-        if setting.value.is_empty() {
-            bail!("`{}` needs a value", setting.key);
-        }
+        let value = (!setting.value.is_empty()).then(|| setting.value.clone());
         match setting.key.as_str() {
+            "template" | "comment-key" if value.is_none() => {
+                bail!("`{}` needs a value", setting.key)
+            }
             "template" if setting.value == "default" => {
                 self.template = Some(TemplateSetting::Default)
             }
@@ -170,12 +192,10 @@ impl Config {
             "comment-key" => self.comment_key = Some(setting.value.clone()),
             key => match key.split_once('.') {
                 Some(("status", status)) if !status.is_empty() => {
-                    self.status_labels
-                        .insert(status.to_string(), setting.value.clone());
+                    set_or_remove(&mut self.status_labels, status, value)
                 }
                 Some(("step", step)) if !step.is_empty() => {
-                    self.step_names
-                        .insert(step.to_string(), setting.value.clone());
+                    set_or_remove(&mut self.step_names, step, value)
                 }
                 _ => bail!(
                     "unknown config key {key:?}; known keys: template, comment-key, status.<status>, step.<step>"
@@ -314,6 +334,14 @@ mod tests {
             "a changed default stays changed"
         );
         assert_eq!(config.status_label("failure"), "💥 Broken");
+    }
+
+    #[test]
+    fn display_names_are_title_cased() {
+        assert_eq!(display_name_for("rules-check"), "Rules Check");
+        assert_eq!(display_name_for("plan"), "Plan");
+        assert_eq!(display_name_for("bar step"), "Bar Step");
+        assert_eq!(display_name_for("tf_apply"), "Tf Apply");
     }
 
     #[test]

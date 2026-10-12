@@ -738,7 +738,7 @@ fn comments_by_other_authors_are_ignored() {
 }
 
 #[test]
-fn github_api_failure_warns_without_changing_exit_code() {
+fn github_api_failure_is_an_error_without_changing_exit_code() {
     let mut server = mockito::Server::new();
     server.mock("POST", "/graphql").with_status(403).create();
     let job = Job::new().with_pull_request(&server.url());
@@ -747,9 +747,36 @@ fn github_api_failure_warns_without_changing_exit_code() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "::warning::status-comment: could not read the Status Comment",
+            "::error::status-comment: could not read the Status Comment",
         ));
-    assert_eq!(job.read("github_output"), "status=success\n");
+    // The comment work ended there, so nothing was recorded.
+    assert_eq!(job.read("github_output"), "");
+}
+
+#[test]
+fn a_failed_save_still_runs_the_command_and_keeps_its_exit_code() {
+    let mut server = mockito::Server::new();
+    server
+        .mock("POST", "/graphql")
+        .with_body(comments_page(&[]))
+        .create();
+    let create = server
+        .mock("POST", "/repos/o/r/issues/5/comments")
+        .with_status(500)
+        .expect(1)
+        .create();
+    let job = Job::new().with_pull_request(&server.url());
+    job.cmd()
+        .args(["exec", "plan", "echo ran; exit 3"])
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("ran"))
+        .stdout(predicate::str::contains(
+            "::error::status-comment: could not update the Status Comment",
+        ));
+    // Only the `running` save was tried; the comment work ended there.
+    create.assert();
+    assert_eq!(job.read("github_output"), "");
 }
 
 /// Local Mode: run on a laptop with no GitHub Actions environment at all.
@@ -858,5 +885,5 @@ fn local_mode_starts_a_new_run_after_finalize() {
     let comment = local_comment(dir.path());
     assert!(comment.contains("| Apply |"), "{comment}");
     assert!(!comment.contains("| Plan |"), "{comment}");
-    assert!(comment.contains(r#""run_id":"local-2""#), "{comment}");
+    assert!(comment.contains(r#""run_id":"local""#), "{comment}");
 }

@@ -134,13 +134,12 @@ impl State {
 }
 
 #[cfg(test)]
-pub fn names(args: &[&str]) -> Vec<String> {
-    args.iter().map(|a| a.to_string()).collect()
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
+
+    fn names(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| a.to_string()).collect()
+    }
 
     fn step_names(state: &State) -> Vec<&str> {
         state.steps.iter().map(|s| s.name.as_str()).collect()
@@ -228,7 +227,7 @@ mod tests {
         assert!(!state.is_newer_than("200", 2));
         assert!(!state.is_newer_than("200", 3));
         assert!(!state.is_newer_than("201", 1));
-        assert!(!State::new("local-3", 1).is_newer_than("local-1", 1));
+        assert!(!State::new("local", 2).is_newer_than("local", 1));
     }
 
     #[test]

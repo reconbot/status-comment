@@ -3,6 +3,9 @@
 
 use std::collections::HashMap;
 
+use anyhow::Result;
+
+use crate::render::{Renderer, Target};
 use crate::state::{State, VERSION};
 
 const KEY_PREFIX: &str = "<!-- status-comment:key ";
@@ -134,6 +137,14 @@ pub fn load(body: &str) -> Option<State> {
         step.output = outputs.remove(&step.name);
     }
     Some(state)
+}
+
+/// The whole Status Comment: the rendered Template, sized to leave room for
+/// the hidden markers, then the markers.
+pub fn build(renderer: &Renderer, state: &State, key: &str) -> Result<String> {
+    let reserve = compose("", state, key).chars().count();
+    let rendered = renderer.render(state, Target::Comment, reserve)?;
+    Ok(compose(&rendered, state, key))
 }
 
 /// Appends the hidden key and state markers to a rendered body.

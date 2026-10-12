@@ -13,18 +13,28 @@ use crate::state::State;
 pub const DEFAULT_TEMPLATE: &str = include_str!("default_template.md.j2");
 
 /// GitHub's comment body limit, in characters.
-pub const COMMENT_LIMIT: usize = 65_536;
+const COMMENT_LIMIT: usize = 65_536;
 
 /// Ends the line that replaces the middle of a truncated Output.
 const OMITTED: &str = "omitted by status-comment …";
 /// GitHub's limit for one step's job summary.
-pub const SUMMARY_LIMIT: usize = 1024 * 1024;
+const SUMMARY_LIMIT: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Target {
     Comment,
     Summary,
+}
+
+impl Target {
+    /// How many characters GitHub accepts.
+    fn limit(self) -> usize {
+        match self {
+            Target::Comment => COMMENT_LIMIT,
+            Target::Summary => SUMMARY_LIMIT,
+        }
+    }
 }
 
 /// What a Template can see about the GitHub context.
@@ -42,12 +52,6 @@ pub struct GithubView {
     pub updated_at: String,
 }
 
-#[derive(Default)]
-pub struct RunInfo {
-    pub url: Option<String>,
-    pub attempt: String,
-}
-
 #[derive(Serialize)]
 struct StepView<'a> {
     name: &'a str,
@@ -61,7 +65,7 @@ struct StepView<'a> {
 #[derive(Serialize)]
 struct RunView<'a> {
     id: &'a str,
-    attempt: &'a str,
+    attempt: u32,
     url: Option<&'a str>,
     failing: bool,
     finalized: bool,
@@ -70,21 +74,17 @@ struct RunView<'a> {
 pub struct Renderer<'a> {
     pub template: &'a str,
     pub github: &'a GithubView,
-    pub run: &'a RunInfo,
+    /// The workflow run's page, linked when Output is truncated.
+    pub run_url: Option<&'a str>,
     /// Display names and Status labels.
     pub config: &'a Config,
 }
 
 impl Renderer<'_> {
-    /// Renders the Template, truncating Outputs so the result plus `reserve` bytes
-    /// fits in `limit`.
-    pub fn render(
-        &self,
-        state: &State,
-        target: Target,
-        limit: usize,
-        reserve: usize,
-    ) -> Result<String> {
+    /// Renders the Template, truncating Outputs so the result plus `reserve`
+    /// characters fits in what GitHub accepts for `target`.
+    pub fn render(&self, state: &State, target: Target, reserve: usize) -> Result<String> {
+        let limit = target.limit();
         let full: Vec<Option<String>> = state.steps.iter().map(|s| s.output.clone()).collect();
         let body = self.render_with(state, &full, target)?;
         let mut excess = (body.chars().count() + reserve).saturating_sub(limit);
@@ -142,7 +142,7 @@ impl Renderer<'_> {
                 .build()
                 .expect("default syntax is valid"),
         );
-        let run_url = self.run.url.clone();
+        let run_url = self.run_url.map(str::to_string);
         env.add_filter("output", move |step: Value| -> Value {
             let name = step.get_attr("name").ok();
             let output = name
@@ -183,8 +183,8 @@ impl Renderer<'_> {
             .collect();
         let run = RunView {
             id: &state.run_id,
-            attempt: &self.run.attempt,
-            url: self.run.url.as_deref(),
+            attempt: state.attempt,
+            url: self.run_url,
             failing: state.is_failing(),
             finalized: state.finalized,
         };
@@ -306,17 +306,13 @@ mod tests {
             Some(&"y\n".repeat(50_000)),
         );
         let github = github();
-        let run = RunInfo {
-            url: Some("https://github.com/o/r/actions/runs/1".into()),
-            attempt: "1".into(),
-        };
         let body = Renderer {
             template: DEFAULT_TEMPLATE,
             github: &github,
-            run: &run,
+            run_url: Some("https://github.com/o/r/actions/runs/1"),
             config: &config(),
         }
-        .render(&state, Target::Comment, COMMENT_LIMIT, 1000)
+        .render(&state, Target::Comment, 1000)
         .unwrap();
         assert!(body.chars().count() + 1000 <= COMMENT_LIMIT);
         assert!(body.contains("ROOT CAUSE"));

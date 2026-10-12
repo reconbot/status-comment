@@ -7,6 +7,7 @@ use minijinja::{AutoEscape, Environment};
 use serde::Serialize;
 
 use crate::comment::output_block;
+use crate::config::Config;
 use crate::state::State;
 
 pub const DEFAULT_TEMPLATE: &str = include_str!("default_template.md.j2");
@@ -50,10 +51,10 @@ pub struct RunInfo {
 #[derive(Serialize)]
 struct StepView<'a> {
     name: &'a str,
-    display_name: &'a str,
+    display_name: String,
     status: &'a str,
+    status_label: String,
     failing: bool,
-    builtin: bool,
     has_output: bool,
 }
 
@@ -70,6 +71,8 @@ pub struct Renderer<'a> {
     pub template: &'a str,
     pub github: &'a GithubView,
     pub run: &'a RunInfo,
+    /// Display names and Status labels.
+    pub config: &'a Config,
 }
 
 impl Renderer<'_> {
@@ -171,10 +174,10 @@ impl Renderer<'_> {
             .zip(outputs)
             .map(|(s, o)| StepView {
                 name: &s.name,
-                display_name: &s.display_name,
+                display_name: self.config.step_name(&s.name),
                 status: s.status.as_str(),
+                status_label: self.config.status_label(s.status.as_str()),
                 failing: s.status.is_failing(),
-                builtin: s.status.is_builtin(),
                 has_output: o.is_some(),
             })
             .collect();
@@ -267,8 +270,14 @@ fn truncate_middle(text: &str, cap: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::specs;
+    use crate::state::names;
     use crate::status::Status;
+
+    fn config() -> Config {
+        let mut config = Config::default();
+        config.fill_defaults(None);
+        config
+    }
 
     fn github() -> GithubView {
         GithubView {
@@ -291,6 +300,7 @@ mod tests {
             template,
             github: &github,
             run: &run,
+            config: &config(),
         }
         .render(state, target, COMMENT_LIMIT, 0)
         .unwrap()
@@ -303,7 +313,7 @@ mod tests {
     #[test]
     fn default_template_renders_table_and_outputs() {
         let mut state = State::new("1");
-        state.set_steps(&specs(&["init", "plan", "apply"]));
+        state.set_steps(&names(&["init", "plan", "apply"]));
         record(&mut state, "init", Status::Success, Some("Initialized"));
         record(&mut state, "plan", Status::Failure, Some("Error: boom"));
         let body = render(DEFAULT_TEMPLATE, &state, Target::Comment);
@@ -327,7 +337,7 @@ mod tests {
     #[test]
     fn table_rows_are_contiguous() {
         let mut state = State::new("1");
-        state.set_steps(&specs(&["a", "b"]));
+        state.set_steps(&names(&["a", "b"]));
         let body = render(DEFAULT_TEMPLATE, &state, Target::Summary);
         assert!(
             body.contains("|------|--------|\n| A | ⬜ Pending |\n| B | ⬜ Pending |\n"),
@@ -387,6 +397,7 @@ mod tests {
             template: DEFAULT_TEMPLATE,
             github: &github,
             run: &run,
+            config: &config(),
         }
         .render(&state, Target::Comment, COMMENT_LIMIT, 1000)
         .unwrap();

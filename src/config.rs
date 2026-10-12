@@ -1,11 +1,45 @@
 //! Per-job settings that later calls read back: the config file.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
+
+/// How each Built-in Status is shown until `config set status.<name>=…` changes it.
+const BUILT_IN_STATUS_LABELS: [(&str, &str); 6] = [
+    ("pending", "⬜ Pending"),
+    ("running", "⏳ Running…"),
+    ("success", "✅ Success"),
+    ("failure", "❌ Failed"),
+    ("skipped", "⏭️ Skipped"),
+    ("cancelled", "🚫 Cancelled"),
+];
+
+/// `rules-check` → `Rules Check`.
+fn display_name_for(name: &str) -> String {
+    name.split(['-', '_', ' '])
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
+/// An empty value removes the key, so the fallback applies again.
+fn set_or_remove(map: &mut BTreeMap<String, String>, key: &str, value: Option<String>) {
+    match value {
+        Some(value) => map.insert(key.to_string(), value),
+        None => map.remove(key),
+    };
+}
 
 /// Which Template renders the Status Comment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +83,12 @@ pub struct Config {
         skip_serializing_if = "Option::is_none"
     )]
     pub comment_key: Option<String>,
+    /// How each Status is shown, by Status: `config set status.<status>=<label>`.
+    #[serde(default, rename = "status", skip_serializing_if = "BTreeMap::is_empty")]
+    pub status_labels: BTreeMap<String, String>,
+    /// Display names, by Step name: `config set step.<name>=<display name>`.
+    #[serde(default, rename = "step", skip_serializing_if = "BTreeMap::is_empty")]
+    pub step_names: BTreeMap<String, String>,
 }
 
 /// A `config set` argument: `KEY=VALUE`.
@@ -108,16 +148,39 @@ impl Config {
             self.comment_key = comment_key;
             changed = true;
         }
+        for (status, label) in BUILT_IN_STATUS_LABELS {
+            if !self.status_labels.contains_key(status) {
+                self.status_labels.insert(status.into(), label.into());
+                changed = true;
+            }
+        }
         changed
+    }
+
+    /// How a Status is shown: its configured label, or the Status itself.
+    pub fn status_label(&self, status: &str) -> String {
+        self.status_labels
+            .get(status)
+            .cloned()
+            .unwrap_or_else(|| status.to_string())
+    }
+
+    /// A Step's display name: the configured one, or the title-cased name.
+    pub fn step_name(&self, name: &str) -> String {
+        self.step_names
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| display_name_for(name))
     }
 
     /// Applies one `config set` value. A relative Template path resolves against
     /// the current directory.
     pub fn set(&mut self, setting: &Setting) -> Result<()> {
-        if setting.value.is_empty() {
-            bail!("`{}` needs a value", setting.key);
-        }
+        let value = (!setting.value.is_empty()).then(|| setting.value.clone());
         match setting.key.as_str() {
+            "template" | "comment-key" if value.is_none() => {
+                bail!("`{}` needs a value", setting.key)
+            }
             "template" if setting.value == "default" => {
                 self.template = Some(TemplateSetting::Default)
             }
@@ -127,7 +190,17 @@ impl Config {
                 ))?))
             }
             "comment-key" => self.comment_key = Some(setting.value.clone()),
-            other => bail!("unknown config key {other:?}; known keys: template, comment-key"),
+            key => match key.split_once('.') {
+                Some(("status", status)) if !status.is_empty() => {
+                    set_or_remove(&mut self.status_labels, status, value)
+                }
+                Some(("step", step)) if !step.is_empty() => {
+                    set_or_remove(&mut self.step_names, step, value)
+                }
+                _ => bail!(
+                    "unknown config key {key:?}; known keys: template, comment-key, status.<status>, step.<step>"
+                ),
+            },
         }
         Ok(())
     }
@@ -166,6 +239,7 @@ mod tests {
         let config = Config {
             template: Some(TemplateSetting::File("/repo/t.md.j2".into())),
             comment_key: Some("prod".into()),
+            ..Config::default()
         };
         config.save(&path).unwrap();
         assert_eq!(Config::read(&path).unwrap(), Some(config));
@@ -185,7 +259,7 @@ mod tests {
     fn template_default_round_trips_as_a_string() {
         let config = Config {
             template: Some(TemplateSetting::Default),
-            comment_key: None,
+            ..Config::default()
         };
         let json = serde_json::to_string(&config).unwrap();
         assert_eq!(json, r#"{"template":"default"}"#);
@@ -239,6 +313,47 @@ mod tests {
         assert!(config.set(&"colour=blue".parse().unwrap()).is_err());
         assert!(config.set(&"comment-key=".parse().unwrap()).is_err());
         assert!("no-equals".parse::<Setting>().is_err());
+    }
+
+    #[test]
+    fn built_in_status_labels_are_defaults_and_can_change() {
+        let mut config = Config::default();
+        config.fill_defaults(None);
+        assert_eq!(config.status_label("failure"), "❌ Failed");
+        assert_eq!(config.status_label("changes"), "changes");
+
+        config
+            .set(&"status.changes=🔍 Changes detected".parse().unwrap())
+            .unwrap();
+        config
+            .set(&"status.failure=💥 Broken".parse().unwrap())
+            .unwrap();
+        assert_eq!(config.status_label("changes"), "🔍 Changes detected");
+        assert!(
+            !config.fill_defaults(None),
+            "a changed default stays changed"
+        );
+        assert_eq!(config.status_label("failure"), "💥 Broken");
+    }
+
+    #[test]
+    fn display_names_are_title_cased() {
+        assert_eq!(display_name_for("rules-check"), "Rules Check");
+        assert_eq!(display_name_for("plan"), "Plan");
+        assert_eq!(display_name_for("bar step"), "Bar Step");
+        assert_eq!(display_name_for("tf_apply"), "Tf Apply");
+    }
+
+    #[test]
+    fn step_display_names_default_to_title_case() {
+        let mut config = Config::default();
+        assert_eq!(config.step_name("rules-check"), "Rules Check");
+        config
+            .set(&"step.rules-check=OPA Rules".parse().unwrap())
+            .unwrap();
+        assert_eq!(config.step_name("rules-check"), "OPA Rules");
+        assert!(config.set(&"step.=x".parse().unwrap()).is_err());
+        assert!(config.set(&"steps.x=y".parse().unwrap()).is_err());
     }
 
     #[test]

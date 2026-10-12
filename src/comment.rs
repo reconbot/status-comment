@@ -148,7 +148,6 @@ pub fn compose(rendered: &str, state: &State, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::specs;
     use crate::status::Status;
 
     fn state_with_output(name: &str, output: &str) -> State {
@@ -187,12 +186,13 @@ mod tests {
 
     #[test]
     fn json_in_state_cannot_close_the_marker() {
+        // The JSON holds Step names and Custom Statuses verbatim.
         let mut state = State::new("1");
-        state.set_steps(&specs(&["x=a --> b"]));
+        state.record("a --> b", Status::Custom("c-->d".into()), None);
         let body = compose("", &state, "k");
         assert_eq!(
-            load(&body).unwrap().step("x").unwrap().display_name,
-            "a --> b"
+            load(&body).unwrap().step("a --> b").unwrap().status,
+            Status::Custom("c-->d".into())
         );
     }
 

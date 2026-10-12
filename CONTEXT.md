@@ -5,7 +5,7 @@ A CLI that keeps a pull request comment up to date with the Steps of a GitHub Ac
 ## Language
 
 **Step**:
-One row in a Status Comment: a named unit of work with a Status and optional Output, listable before it runs. Its name is its identity (`rules-check`); its display name is its label (`Rules Check`).
+One row in a Status Comment: a named unit of work with a Status and optional Output, listable before it runs. Its name is its identity (`rules-check`); its display name, set in the Config or title-cased from the name, is its label (`Rules Check`).
 _Avoid_: Stage, row
 
 **Workflow step**:
@@ -48,7 +48,7 @@ _Avoid_: Comment ID
 The minijinja layout that renders a Status Comment: the Default Template, or a user's file. The Default Template is built in and spelled `default` in the Config.
 
 **Config**:
-The per-job settings later invocations read back: which Template and which Comment Key. Created with every default written in.
+The per-job settings later invocations read back: the Template, the Comment Key, Step display names and Status labels. Created with every default written in.
 _Avoid_: settings, options
 
 **State Path**:

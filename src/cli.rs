@@ -11,7 +11,7 @@ use crate::execute::execute;
 use crate::exit_code_map::ExitCodeMap;
 use crate::github_env::GithubEnv;
 use crate::render::{self, GithubView, Renderer, RunInfo, Target};
-use crate::state::{State, StepSpec};
+use crate::state::State;
 use crate::status::Status;
 use crate::store::{CommentStore, FileStore, GithubStore};
 
@@ -92,7 +92,8 @@ pub enum Command {
 Defaults, as the equivalent commands:
   config set template=default
   config set comment-key=\"$GITHUB_WORKFLOW/$GITHUB_JOB\"   (on GitHub)
-  config set comment-key=local                           (in Local Mode)"
+  config set comment-key=local                           (in Local Mode)
+  config set status.success=\"✅ Success\"                  (and so on for each Built-in Status)"
     )]
     Config(ConfigCommand),
 
@@ -112,9 +113,9 @@ pub enum StepsCommand {
     /// Set the Run's Steps, in order. Unlisted Steps are removed; listed ones keep
     /// their Status; new ones start pending.
     Set {
-        /// `name` or `name=Display Name`.
+        /// Step names. Display names come from `config set step.<name>=…`.
         #[arg(required = true, value_name = "STEP")]
-        steps: Vec<StepSpec>,
+        steps: Vec<String>,
     },
 }
 
@@ -122,7 +123,8 @@ pub enum StepsCommand {
 pub enum ConfigCommand {
     /// Print the current config.
     List,
-    /// Set values and print the result: `template=<file|default>`, `comment-key=<key>`.
+    /// Set values and print the result: `template=<file|default>`, `comment-key=<key>`,
+    /// `status.<status>=<label>`, `step.<step>=<display name>`.
     Set {
         #[arg(required = true, value_name = "KEY=VALUE")]
         settings: Vec<Setting>,
@@ -250,13 +252,14 @@ pub fn run(cli: Cli, env: &GithubEnv, stdin: Option<String>) -> Result<i32> {
     } else {
         Some("local".to_string())
     };
-    changed |= config.fill_defaults(default_key);
+    // Settings first, so an emptied built-in label gets its default back.
     if let Command::Config(ConfigCommand::Set { settings }) = &cli.command {
         for setting in settings {
             config.set(setting)?;
             changed = true;
         }
     }
+    changed |= config.fill_defaults(default_key);
     if changed {
         config.save(&config_path)?;
     }
@@ -281,6 +284,7 @@ pub fn run(cli: Cli, env: &GithubEnv, stdin: Option<String>) -> Result<i32> {
         template: &template,
         github: &github,
         run: &run_info,
+        config: &config,
     };
 
     let mut store = open_store(env, &cli, &key);

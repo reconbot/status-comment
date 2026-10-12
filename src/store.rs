@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -41,13 +41,62 @@ impl CommentStore for FileStore {
 #[derive(Deserialize)]
 struct IssueComment {
     id: u64,
-    body: Option<String>,
 }
 
-/// The Status Comment on a pull request, found by its Comment Key marker.
+/// Lists a PR's comments, oldest first. `viewerDidAuthor` is whether the token
+/// in use wrote the comment, which works for every kind of token.
+const COMMENTS_QUERY: &str =
+    "query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      comments(first: 100, after: $cursor) {
+        nodes { databaseId body viewerDidAuthor }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}";
+
+#[derive(Deserialize)]
+struct GraphqlResponse {
+    data: Option<serde_json::Value>,
+    errors: Option<Vec<GraphqlError>>,
+}
+
+#[derive(Deserialize)]
+struct GraphqlError {
+    message: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommentPage {
+    nodes: Vec<CommentNode>,
+    page_info: PageInfo,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommentNode {
+    database_id: u64,
+    body: String,
+    viewer_did_author: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PageInfo {
+    has_next_page: bool,
+    end_cursor: Option<String>,
+}
+
+/// The Status Comment on a pull request: the oldest comment this token wrote
+/// that carries the Comment Key marker. Comments by anyone else are ignored, so
+/// a copied marker can't feed it someone else's state.
 pub struct GithubStore {
     agent: ureq::Agent,
     api_url: String,
+    graphql_url: String,
     repository: String,
     pr_number: u64,
     token: String,
@@ -55,10 +104,15 @@ pub struct GithubStore {
     comment_id: Option<u64>,
 }
 
-const PER_PAGE: usize = 100;
-
 impl GithubStore {
-    pub fn new(api_url: &str, repository: &str, pr_number: u64, token: &str, key: &str) -> Self {
+    pub fn new(
+        api_url: &str,
+        graphql_url: &str,
+        repository: &str,
+        pr_number: u64,
+        token: &str,
+        key: &str,
+    ) -> Self {
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(std::time::Duration::from_secs(30)))
             .build()
@@ -66,6 +120,7 @@ impl GithubStore {
         GithubStore {
             agent,
             api_url: api_url.trim_end_matches('/').to_string(),
+            graphql_url: graphql_url.to_string(),
             repository: repository.to_string(),
             pr_number,
             token: token.to_string(),
@@ -81,36 +136,52 @@ impl GithubStore {
             .header("X-GitHub-Api-Version", "2022-11-28")
             .header("User-Agent", "status-comment")
     }
+
+    fn comment_page(&self, cursor: Option<&str>) -> Result<CommentPage> {
+        let (owner, repo) = self
+            .repository
+            .split_once('/')
+            .context("GITHUB_REPOSITORY should be owner/repo")?;
+        let request = json!({
+            "query": COMMENTS_QUERY,
+            "variables": { "owner": owner, "repo": repo, "number": self.pr_number, "cursor": cursor },
+        });
+        let response: GraphqlResponse = self
+            .with_headers(self.agent.post(&self.graphql_url))
+            .send_json(&request)
+            .context("listing PR comments")?
+            .body_mut()
+            .read_json()
+            .context("parsing PR comments")?;
+        if let Some(error) = response.errors.as_ref().and_then(|e| e.first()) {
+            bail!("listing PR comments: {}", error.message);
+        }
+        let page = response
+            .data
+            .and_then(|d| d.pointer("/repository/pullRequest/comments").cloned())
+            .context("listing PR comments: no pull request in the response")?;
+        serde_json::from_value(page).context("parsing PR comments")
+    }
 }
 
 impl CommentStore for GithubStore {
-    /// Comments are listed oldest first, so the first match is the oldest.
     fn load(&mut self) -> Result<Option<String>> {
-        for page in 1.. {
-            let url = format!(
-                "{}/repos/{}/issues/{}/comments?per_page={PER_PAGE}&page={page}",
-                self.api_url, self.repository, self.pr_number
-            );
-            let comments: Vec<IssueComment> = self
-                .with_headers(self.agent.get(&url))
-                .call()
-                .context("listing PR comments")?
-                .body_mut()
-                .read_json()
-                .context("parsing PR comments")?;
-            for c in &comments {
-                if let Some(body) = &c.body
-                    && comment::has_key_marker(body, &self.key)
-                {
-                    self.comment_id = Some(c.id);
-                    return Ok(Some(body.clone()));
-                }
+        let mut cursor = None;
+        loop {
+            let page = self.comment_page(cursor.as_deref())?;
+            if let Some(found) = page
+                .nodes
+                .into_iter()
+                .find(|c| c.viewer_did_author && comment::has_key_marker(&c.body, &self.key))
+            {
+                self.comment_id = Some(found.database_id);
+                return Ok(Some(found.body));
             }
-            if comments.len() < PER_PAGE {
-                break;
+            if !page.page_info.has_next_page {
+                return Ok(None);
             }
+            cursor = page.page_info.end_cursor;
         }
-        Ok(None)
     }
 
     fn save(&mut self, body: &str) -> Result<()> {
@@ -167,30 +238,52 @@ mod tests {
         assert!(store.load().unwrap().is_some());
     }
 
+    /// A GraphQL page of comments: `(id, body, written by us)`.
+    fn page(comments: &[(u64, &str, bool)], next: Option<&str>) -> String {
+        let nodes: Vec<_> = comments
+            .iter()
+            .map(|(id, body, ours)| json!({ "databaseId": id, "body": body, "viewerDidAuthor": ours }))
+            .collect();
+        json!({ "data": { "repository": { "pullRequest": { "comments": {
+            "nodes": nodes,
+            "pageInfo": { "hasNextPage": next.is_some(), "endCursor": next },
+        } } } } })
+        .to_string()
+    }
+
+    fn store(server: &mockito::Server, key: &str) -> GithubStore {
+        GithubStore::new(
+            &server.url(),
+            &format!("{}/graphql", server.url()),
+            "o/r",
+            5,
+            "t0k",
+            key,
+        )
+    }
+
     #[test]
-    fn finds_oldest_matching_comment_and_updates_it() {
+    fn finds_oldest_of_our_matching_comments_and_updates_it() {
         let mut server = mockito::Server::new();
-        let comments = json!([
-            { "id": 1, "body": "unrelated" },
-            { "id": 2, "body": body_for("wf/plan") },
-            { "id": 3, "body": body_for("wf/plan") },
-        ]);
+        let ours = body_for("wf/plan");
         let list = server
-            .mock("GET", "/repos/o/r/issues/5/comments")
-            .match_query(Matcher::AllOf(vec![
-                Matcher::UrlEncoded("per_page".into(), "100".into()),
-                Matcher::UrlEncoded("page".into(), "1".into()),
-            ]))
+            .mock("POST", "/graphql")
             .match_header("authorization", "Bearer t0k")
-            .with_body(comments.to_string())
+            .match_body(Matcher::PartialJson(
+                json!({ "variables": { "owner": "o", "repo": "r", "number": 5 } }),
+            ))
+            .with_body(page(
+                &[(1, "unrelated", true), (2, &ours, true), (3, &ours, true)],
+                None,
+            ))
             .create();
         let update = server
             .mock("PATCH", "/repos/o/r/issues/comments/2")
             .match_body(Matcher::Json(json!({ "body": "new" })))
-            .with_body(r#"{"id":2,"body":"new"}"#)
+            .with_body(r#"{"id":2}"#)
             .create();
 
-        let mut store = GithubStore::new(&server.url(), "o/r", 5, "t0k", "wf/plan");
+        let mut store = store(&server, "wf/plan");
         assert!(store.load().unwrap().unwrap().contains("table"));
         store.save("new").unwrap();
         list.assert();
@@ -198,45 +291,60 @@ mod tests {
     }
 
     #[test]
+    fn ignores_comments_written_by_anyone_else() {
+        let mut server = mockito::Server::new();
+        let marker = body_for("k");
+        server
+            .mock("POST", "/graphql")
+            .with_body(page(&[(1, &marker, false), (2, &marker, true)], None))
+            .create();
+        let mut store = store(&server, "k");
+        assert!(store.load().unwrap().is_some());
+        assert_eq!(store.comment_id, Some(2));
+    }
+
+    #[test]
     fn pages_through_comments() {
         let mut server = mockito::Server::new();
-        let page1: Vec<_> = (0..100).map(|i| json!({ "id": i, "body": "x" })).collect();
         server
-            .mock("GET", "/repos/o/r/issues/5/comments")
-            .match_query(Matcher::UrlEncoded("page".into(), "1".into()))
-            .with_body(serde_json::Value::from(page1).to_string())
+            .mock("POST", "/graphql")
+            .match_body(Matcher::PartialJson(
+                json!({ "variables": { "cursor": null } }),
+            ))
+            .with_body(page(&[(1, "x", true)], Some("c1")))
             .create();
-        let page2 = server
-            .mock("GET", "/repos/o/r/issues/5/comments")
-            .match_query(Matcher::UrlEncoded("page".into(), "2".into()))
-            .with_body(json!([{ "id": 500, "body": body_for("k") }]).to_string())
+        let second = server
+            .mock("POST", "/graphql")
+            .match_body(Matcher::PartialJson(
+                json!({ "variables": { "cursor": "c1" } }),
+            ))
+            .with_body(page(&[(500, &body_for("k"), true)], None))
             .create();
-        let mut store = GithubStore::new(&server.url(), "o/r", 5, "t", "k");
+        let mut store = store(&server, "k");
         assert!(store.load().unwrap().is_some());
         assert_eq!(store.comment_id, Some(500));
-        page2.assert();
+        second.assert();
     }
 
     #[test]
     fn creates_comment_when_none_matches() {
         let mut server = mockito::Server::new();
         server
-            .mock("GET", "/repos/o/r/issues/5/comments")
-            .match_query(Matcher::Any)
-            .with_body("[]")
+            .mock("POST", "/graphql")
+            .with_body(page(&[], None))
             .create();
         let create = server
             .mock("POST", "/repos/o/r/issues/5/comments")
             .match_body(Matcher::Json(json!({ "body": "first" })))
             .with_status(201)
-            .with_body(r#"{"id":9,"body":"first"}"#)
+            .with_body(r#"{"id":9}"#)
             .create();
         let update = server
             .mock("PATCH", "/repos/o/r/issues/comments/9")
-            .with_body(r#"{"id":9,"body":"second"}"#)
+            .with_body(r#"{"id":9}"#)
             .create();
 
-        let mut store = GithubStore::new(&server.url(), "o/r", 5, "t", "k");
+        let mut store = store(&server, "k");
         assert_eq!(store.load().unwrap(), None);
         store.save("first").unwrap();
         store.save("second").unwrap();
@@ -247,12 +355,18 @@ mod tests {
     #[test]
     fn api_errors_surface() {
         let mut server = mockito::Server::new();
+        server.mock("POST", "/graphql").with_status(403).create();
+        assert!(store(&server, "k").load().is_err());
+
+        let mut server = mockito::Server::new();
         server
-            .mock("GET", "/repos/o/r/issues/5/comments")
-            .match_query(Matcher::Any)
-            .with_status(403)
+            .mock("POST", "/graphql")
+            .with_body(r#"{"data":null,"errors":[{"message":"Resource not accessible"}]}"#)
             .create();
-        let mut store = GithubStore::new(&server.url(), "o/r", 5, "t", "k");
-        assert!(store.load().is_err());
+        let err = store(&server, "k").load().unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Resource not accessible"),
+            "{err:#}"
+        );
     }
 }

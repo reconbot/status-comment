@@ -168,7 +168,14 @@ fn open_store(env: &GithubEnv, cli: &Cli, key: &str) -> Box<dyn CommentStore> {
     let token = cli.token.clone().or_else(|| env.token.clone());
     match (&env.pull_request, &env.repository, token) {
         (Some(pr), Some(repo), Some(token)) => {
-            return Box::new(GithubStore::new(&env.api_url, repo, pr.number, &token, key));
+            return Box::new(GithubStore::new(
+                &env.api_url,
+                &env.graphql_url,
+                repo,
+                pr.number,
+                &token,
+                key,
+            ));
         }
         (Some(_), _, None) => {
             warn("no GitHub token (set GITHUB_TOKEN or pass --token); skipping the Status Comment")
@@ -310,12 +317,38 @@ pub fn run(cli: Cli, env: &GithubEnv, stdin: Option<String>) -> Result<i32> {
     } else {
         local_run_id(previous.as_ref(), &cli.command)
     };
-    let mut state = State::for_run(previous, &run_id);
+    let attempt: u32 = env
+        .run_attempt
+        .as_deref()
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(1);
+    // A later Run (or re-run attempt) already wrote the comment: writing now
+    // would replace newer results with older ones.
+    let previous = match previous {
+        Some(p) if p.is_newer_than(&run_id, attempt) => {
+            warn(format!(
+                "the Status Comment already shows run {} attempt {}, which is newer; not overwriting it",
+                p.run_id, p.attempt
+            ));
+            comment_ok = false;
+            None
+        }
+        other => other,
+    };
+    // Nothing was started in this Run, so there's nothing to close out; this
+    // keeps an unused install from posting, or wiping, a comment at job end.
+    if matches!(cli.command, Command::Finalize)
+        && previous.as_ref().is_none_or(|p| p.run_id != run_id)
+    {
+        eprintln!("status-comment: no Steps in this Run; nothing to finalize");
+        return Ok(0);
+    }
+    let mut state = State::for_run(previous, &run_id, attempt);
     let mut publish = |state: &State| -> Result<()> {
         if !comment_ok {
             return Ok(());
         }
-        let reserve = comment::compose("", state, &key).len();
+        let reserve = comment::compose("", state, &key).chars().count();
         let body = renderer.render(state, Target::Comment, render::COMMENT_LIMIT, reserve)?;
         if let Err(e) = store.save(&comment::compose(&body, state, &key)) {
             warn(e.context("could not update the Status Comment"));

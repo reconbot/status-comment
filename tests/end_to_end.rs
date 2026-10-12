@@ -41,10 +41,27 @@ impl Job {
         self.vars
             .push(("GITHUB_EVENT_PATH".into(), event.display().to_string()));
         self.vars.push(("GITHUB_API_URL".into(), api_url.into()));
+        self.vars
+            .push(("GITHUB_GRAPHQL_URL".into(), format!("{api_url}/graphql")));
         self.vars.push(("GITHUB_TOKEN".into(), "t0k".into()));
         self
     }
+}
 
+/// A GraphQL response listing PR comments: `(id, body, written by our token)`.
+fn comments_page(comments: &[(u64, &str, bool)]) -> String {
+    let nodes: Vec<_> = comments
+        .iter()
+        .map(|(id, body, ours)| json!({ "databaseId": id, "body": body, "viewerDidAuthor": ours }))
+        .collect();
+    json!({ "data": { "repository": { "pullRequest": { "comments": {
+        "nodes": nodes,
+        "pageInfo": { "hasNextPage": false, "endCursor": null },
+    } } } } })
+    .to_string()
+}
+
+impl Job {
     fn cmd(&self) -> Command {
         let mut cmd = Command::cargo_bin("status-comment").unwrap();
         cmd.env_clear()
@@ -183,6 +200,25 @@ fn finalize_cancels_running_steps_and_warns() {
     let comment = job.comment();
     assert!(comment.contains("| Apply | 🚫 Cancelled |"), "{comment}");
     assert!(comment.contains("> [!WARNING]"), "{comment}");
+}
+
+#[test]
+fn finalize_without_steps_in_this_run_changes_nothing() {
+    let mut job = Job::new();
+    job.cmd()
+        .arg("finalize")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("nothing to finalize"));
+    assert!(!job.path("runner_temp/status-comment/comment.md").exists());
+    assert_eq!(job.read("step_summary"), "");
+
+    // A later Run that never records a Step leaves the last Run's comment alone.
+    job.cmd().args(["step", "plan"]).assert().success();
+    let before = job.comment();
+    job.run_id = "101".into();
+    job.cmd().arg("finalize").assert().success();
+    assert_eq!(job.comment(), before);
 }
 
 #[test]
@@ -485,9 +521,8 @@ fn needs_a_comment_key_when_workflow_env_is_missing() {
 fn pull_request_creates_the_status_comment() {
     let mut server = mockito::Server::new();
     server
-        .mock("GET", "/repos/o/r/issues/5/comments")
-        .match_query(Matcher::Any)
-        .with_body("[]")
+        .mock("POST", "/graphql")
+        .with_body(comments_page(&[]))
         .create();
     let create = server
         .mock("POST", "/repos/o/r/issues/5/comments")
@@ -519,9 +554,8 @@ fn pull_request_updates_existing_comment_keeping_other_steps() {
 
     let mut server = mockito::Server::new();
     server
-        .mock("GET", "/repos/o/r/issues/5/comments")
-        .match_query(Matcher::Any)
-        .with_body(json!([{ "id": 1, "body": "hi" }, { "id": 2, "body": existing }]).to_string())
+        .mock("POST", "/graphql")
+        .with_body(comments_page(&[(1, "hi", true), (2, &existing, true)]))
         .create();
     let update = server
         .mock("PATCH", "/repos/o/r/issues/comments/2")
@@ -539,13 +573,82 @@ fn pull_request_updates_existing_comment_keeping_other_steps() {
 }
 
 #[test]
-fn github_api_failure_warns_without_changing_exit_code() {
+fn a_comment_from_a_newer_run_is_not_overwritten() {
+    let mut newer = Job::new();
+    newer.run_id = "200".into();
+    newer.cmd().args(["step", "plan"]).assert().success();
+    let existing = newer.comment();
+
     let mut server = mockito::Server::new();
     server
-        .mock("GET", "/repos/o/r/issues/5/comments")
-        .match_query(Matcher::Any)
-        .with_status(403)
+        .mock("POST", "/graphql")
+        .with_body(comments_page(&[(2, &existing, true)]))
         .create();
+    let update = server
+        .mock("PATCH", "/repos/o/r/issues/comments/2")
+        .expect(0)
+        .create();
+    let job = Job::new().with_pull_request(&server.url()); // run 100
+    job.cmd()
+        .args(["exec", "plan", "exit 2", "--exit-code-map", "2=changes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already shows run 200"));
+    update.assert();
+    assert_eq!(job.read("github_output"), "status=changes\n");
+}
+
+#[test]
+fn a_comment_from_an_older_release_keeps_its_steps() {
+    let old = "| Plan | ✅ |\n\n<!-- status-comment:state {\"run_id\":\"100\",\"steps\":[{\"name\":\"old\",\"display_name\":\"Old\",\"status\":\"success\"}]} -->\n<!-- status-comment:key Terraform%2Fplan -->\n";
+    let mut server = mockito::Server::new();
+    server
+        .mock("POST", "/graphql")
+        .with_body(comments_page(&[(2, old, true)]))
+        .create();
+    let update = server
+        .mock("PATCH", "/repos/o/r/issues/comments/2")
+        .match_body(Matcher::AllOf(vec![
+            Matcher::Regex(r"\| Old \| ✅ Success \|".into()),
+            Matcher::Regex(r"\| Plan \| ✅ Success \|".into()),
+            Matcher::Regex(format!(
+                r#"\\"version\\":\\"{}\\""#,
+                env!("CARGO_PKG_VERSION")
+            )),
+        ]))
+        .with_body(r#"{"id":2}"#)
+        .create();
+    let job = Job::new().with_pull_request(&server.url());
+    job.cmd().args(["step", "plan"]).assert().success();
+    update.assert();
+}
+
+#[test]
+fn comments_by_other_authors_are_ignored() {
+    let local = Job::new();
+    local.cmd().args(["step", "forged"]).assert().success();
+    let forged = local.comment();
+
+    let mut server = mockito::Server::new();
+    server
+        .mock("POST", "/graphql")
+        .with_body(comments_page(&[(1, &forged, false)]))
+        .create();
+    let create = server
+        .mock("POST", "/repos/o/r/issues/5/comments")
+        .match_body(Matcher::Regex("Plan".into()))
+        .with_status(201)
+        .with_body(r#"{"id":9}"#)
+        .create();
+    let job = Job::new().with_pull_request(&server.url());
+    job.cmd().args(["step", "plan"]).assert().success();
+    create.assert();
+}
+
+#[test]
+fn github_api_failure_warns_without_changing_exit_code() {
+    let mut server = mockito::Server::new();
+    server.mock("POST", "/graphql").with_status(403).create();
     let job = Job::new().with_pull_request(&server.url());
     job.cmd()
         .args(["exec", "plan", "echo ok"])
@@ -627,7 +730,8 @@ fn default_template_works_as_a_template_file() {
 fn local_mode_never_calls_github() {
     // A token and a PR event lying around locally must not trigger API calls.
     let mut server = mockito::Server::new();
-    let any = server.mock("GET", Matcher::Any).expect(0).create();
+    let reads = server.mock("GET", Matcher::Any).expect(0).create();
+    let writes = server.mock("POST", Matcher::Any).expect(0).create();
     let dir = tempfile::tempdir().unwrap();
     let event = dir.path().join("event.json");
     fs::write(&event, r#"{"pull_request":{"number":5}}"#).unwrap();
@@ -639,7 +743,8 @@ fn local_mode_never_calls_github() {
         .args(["step", "plan"])
         .assert()
         .success();
-    any.assert();
+    reads.assert();
+    writes.assert();
 }
 
 #[test]

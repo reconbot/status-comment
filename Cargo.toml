@@ -9,7 +9,7 @@ repository = "https://github.com/reconbot/status-comment"
 readme = "README.md"
 keywords = ["github-actions", "ci", "pull-request", "comment", "status"]
 categories = ["command-line-utilities", "development-tools::build-utils"]
-exclude = [".github/", ".gitmessage", "mise.toml", "release-please-config.json", ".release-please-manifest.json"]
+exclude = [".github/", ".gitmessage", "action/", "action.yml", "mise.toml", "release-please-config.json", ".release-please-manifest.json"]
 
 [dependencies]
 anyhow = "1.0.104"

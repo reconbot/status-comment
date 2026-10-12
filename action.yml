@@ -8,34 +8,12 @@ inputs:
   version:
     description: Release to install, e.g. v0.1.0. Defaults to the tag this action is used at, or the latest release.
     default: ""
+  finalize:
+    description: Run `status-comment finalize` at the end of the job, even when it fails. Set to false to finalize yourself.
+    default: "true"
 
 runs:
-  using: composite
-  steps:
-    - shell: bash
-      env:
-        VERSION: ${{ inputs.version }}
-        ACTION_REF: ${{ github.action_ref }}
-        REPO: ${{ github.action_repository || 'reconbot/status-comment' }}
-      run: |
-        set -euo pipefail
-        case "$RUNNER_OS-$RUNNER_ARCH" in
-          Linux-X64) target=x86_64-unknown-linux-musl ;;
-          Linux-ARM64) target=aarch64-unknown-linux-musl ;;
-          macOS-ARM64) target=aarch64-apple-darwin ;;
-          *) echo "::error::status-comment has no build for $RUNNER_OS $RUNNER_ARCH"; exit 1 ;;
-        esac
-
-        version="${VERSION:-$ACTION_REF}"
-        if [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-          base="https://github.com/$REPO/releases/download/$version"
-        else
-          base="https://github.com/$REPO/releases/latest/download"
-        fi
-
-        # One request, streamed straight into tar; gzip's checksum catches a bad download.
-        dir="$RUNNER_TEMP/status-comment-bin"
-        mkdir -p "$dir"
-        curl -fsSL --retry 3 "$base/status-comment-$target.tar.gz" | tar -xz -C "$dir"
-        echo "$dir" >> "$GITHUB_PATH"
-        "$dir/status-comment" --version
+  using: node24
+  main: action/install.js
+  post: action/finalize.js
+  post-if: always()

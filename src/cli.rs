@@ -202,7 +202,7 @@ pub fn run(cli: Cli, env: &Env) -> Result<i32> {
                 env.error(e);
                 None
             });
-            let executed = execute(script, &mut std::io::stdout())?;
+            let executed = execute(script, std::io::stdout(), std::io::stderr())?;
             let status = exit_code_map.status_for(executed.exit_code);
             if let Some(mut update) = running {
                 update

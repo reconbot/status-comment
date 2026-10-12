@@ -166,7 +166,8 @@ fn exec_failure_is_failing_and_exits_with_command_code() {
         .args(["exec", "validate", "echo bad >&2; exit 3"])
         .assert()
         .code(3)
-        .stdout(predicate::str::contains("bad"));
+        .stderr(predicate::str::contains("bad"))
+        .stdout(predicate::str::contains("bad").not());
     assert!(job.comment().contains("| Validate | ❌ Failed |"));
     assert_eq!(job.read("github_output"), "status=failure\n");
 }

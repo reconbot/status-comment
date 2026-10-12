@@ -28,53 +28,33 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Everything about a Run that the Status Comment remembers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
-    /// The status-comment version that last wrote it, for debugging; empty in states from releases that didn't record it.
-    #[serde(default)]
+    /// The status-comment version that wrote it; another version's state is never read.
     pub version: String,
     pub run_id: String,
     /// The Run's re-run attempt that last wrote this state.
-    #[serde(default = "first_attempt")]
     pub attempt: u32,
-    #[serde(default)]
     pub finalized: bool,
-    #[serde(default)]
     pub steps: Vec<Step>,
 }
 
-fn first_attempt() -> u32 {
-    1
-}
-
-impl Default for State {
-    fn default() -> Self {
+impl State {
+    pub fn new(run_id: &str, attempt: u32) -> Self {
         State {
             version: VERSION.to_string(),
-            run_id: String::new(),
-            attempt: first_attempt(),
+            run_id: run_id.to_string(),
+            attempt,
             finalized: false,
             steps: Vec::new(),
-        }
-    }
-}
-
-impl State {
-    pub fn new(run_id: &str) -> Self {
-        State {
-            run_id: run_id.to_string(),
-            ..State::default()
         }
     }
 
     /// The previous state if it's the same Run, otherwise a fresh one.
     /// Either way it's now written by `attempt`.
     pub fn for_run(previous: Option<State>, run_id: &str, attempt: u32) -> State {
-        let mut state = match previous {
-            Some(state) if state.run_id == run_id => state,
-            _ => State::new(run_id),
-        };
-        state.attempt = attempt;
-        state.version = VERSION.to_string();
-        state
+        match previous {
+            Some(state) if state.run_id == run_id => State { attempt, ..state },
+            _ => State::new(run_id, attempt),
+        }
     }
 
     /// Whether this state was written by a later Run, or a later attempt of the
@@ -102,7 +82,7 @@ impl State {
         &mut self.steps[index]
     }
 
-    /// Sets the Steps to exactly `names`, in that order, and reopens the Run.
+    /// Sets the Steps to exactly `names`, in that order.
     /// Listed Steps keep their Status and Output; new ones start `pending`.
     pub fn set_steps(&mut self, names: &[String]) {
         let mut previous = std::mem::take(&mut self.steps);
@@ -116,12 +96,10 @@ impl State {
             };
             self.steps.push(step);
         }
-        self.finalized = false;
     }
 
     /// Sets a Step's Status, and its Output when given; unknown Steps are appended.
     pub fn record(&mut self, name: &str, status: Status, output: Option<String>) {
-        self.finalized = false;
         let step = self.step_mut_or_append(name);
         step.status = status;
         if let Some(output) = output {
@@ -129,13 +107,12 @@ impl State {
         }
     }
 
-    /// Every Step back to `pending` with no Output; the Run reopens.
+    /// Every Step back to `pending` with no Output.
     pub fn reset(&mut self) {
         for step in &mut self.steps {
             step.status = Status::Pending;
             step.output = None;
         }
-        self.finalized = false;
     }
 
     /// Steps that never ran become `skipped`; Steps still running become `cancelled`.
@@ -171,7 +148,7 @@ mod tests {
 
     #[test]
     fn set_steps_sets_exactly_the_listed_steps_in_order() {
-        let mut state = State::new("1");
+        let mut state = State::new("1", 1);
         state.set_steps(&names(&["init", "plan", "apply"]));
         state.set_steps(&names(&["plan", "validate", "init", "plan"]));
         assert_eq!(step_names(&state), ["plan", "validate", "init"]);
@@ -180,7 +157,7 @@ mod tests {
 
     #[test]
     fn set_steps_keeps_status_and_output_of_listed_steps() {
-        let mut state = State::new("1");
+        let mut state = State::new("1", 1);
         state.record("plan", Status::Success, Some("log".into()));
         state.set_steps(&names(&["plan"]));
         let plan = state.step("plan").unwrap();
@@ -190,20 +167,18 @@ mod tests {
 
     #[test]
     fn reset_keeps_steps_but_clears_their_data() {
-        let mut state = State::new("1");
+        let mut state = State::new("1", 1);
         state.set_steps(&names(&["plan"]));
         state.record("plan", Status::Failure, Some("log".into()));
-        state.finalize();
         state.reset();
         let plan = state.step("plan").unwrap();
         assert_eq!(plan.status, Status::Pending);
         assert_eq!(plan.output, None);
-        assert!(!state.finalized);
     }
 
     #[test]
     fn steps_recorded_after_set_steps_are_appended() {
-        let mut state = State::new("1");
+        let mut state = State::new("1", 1);
         state.set_steps(&names(&["init", "plan"]));
         state.record("fmt", Status::Success, None);
         assert_eq!(step_names(&state), ["init", "plan", "fmt"]);
@@ -211,7 +186,7 @@ mod tests {
 
     #[test]
     fn recording_without_output_keeps_existing_output() {
-        let mut state = State::new("1");
+        let mut state = State::new("1", 1);
         state.record("plan", Status::Running, Some("log".into()));
         state.record("plan", Status::Success, None);
         assert_eq!(state.step("plan").unwrap().output.as_deref(), Some("log"));
@@ -219,7 +194,7 @@ mod tests {
 
     #[test]
     fn finalize_skips_pending_and_cancels_running() {
-        let mut state = State::new("1");
+        let mut state = State::new("1", 1);
         state.set_steps(&names(&["init", "plan", "apply"]));
         state.record("init", Status::Success, None);
         state.record("plan", Status::Running, None);
@@ -233,7 +208,7 @@ mod tests {
 
     #[test]
     fn new_run_starts_fresh_and_same_run_carries_on() {
-        let mut previous = State::new("1");
+        let mut previous = State::new("1", 1);
         previous.record("plan", Status::Success, None);
 
         let same = State::for_run(Some(previous.clone()), "1", 2);
@@ -253,12 +228,12 @@ mod tests {
         assert!(!state.is_newer_than("200", 2));
         assert!(!state.is_newer_than("200", 3));
         assert!(!state.is_newer_than("201", 1));
-        assert!(!State::new("local-3").is_newer_than("local-1", 1));
+        assert!(!State::new("local-3", 1).is_newer_than("local-1", 1));
     }
 
     #[test]
     fn output_is_not_serialized() {
-        let mut state = State::new("1");
+        let mut state = State::new("1", 1);
         state.record("plan", Status::Success, Some("secret-ish log".into()));
         let json = serde_json::to_string(&state).unwrap();
         assert!(!json.contains("secret-ish log"));

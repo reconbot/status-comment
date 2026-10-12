@@ -691,17 +691,17 @@ fn a_comment_from_a_newer_run_is_not_overwritten() {
 }
 
 #[test]
-fn a_comment_from_an_older_release_keeps_its_steps() {
-    let old = "| Plan | ✅ |\n\n<!-- status-comment:state {\"run_id\":\"100\",\"steps\":[{\"name\":\"old\",\"display_name\":\"Old\",\"status\":\"success\"}]} -->\n<!-- status-comment:key Terraform%2Fplan -->\n";
+fn a_comment_from_another_version_is_replaced_in_place() {
+    // Read as the same Run's attempt 9, it would block this write as newer.
+    let other = "| Old |\n\n<!-- status-comment:state {\"version\":\"0.0.0\",\"run_id\":\"100\",\"attempt\":9,\"finalized\":false,\"steps\":[{\"name\":\"old\",\"status\":\"success\"}]} -->\n<!-- status-comment:key Terraform%2Fplan -->\n";
     let mut server = mockito::Server::new();
     server
         .mock("POST", "/graphql")
-        .with_body(comments_page(&[(2, old, true)]))
+        .with_body(comments_page(&[(2, other, true)]))
         .create();
     let update = server
         .mock("PATCH", "/repos/o/r/issues/comments/2")
         .match_body(Matcher::AllOf(vec![
-            Matcher::Regex(r"\| Old \| ✅ Success \|".into()),
             Matcher::Regex(r"\| Plan \| ✅ Success \|".into()),
             Matcher::Regex(format!(
                 r#"\\"version\\":\\"{}\\""#,

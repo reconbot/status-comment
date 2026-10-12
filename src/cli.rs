@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::comment;
-use crate::config::{Config, Setting, TemplateSetting};
+use crate::config::{Config, Setting};
 use crate::execute::execute;
 use crate::exit_code_map::ExitCodeMap;
 use crate::github_env::GithubEnv;
@@ -188,7 +188,7 @@ fn open_store(env: &GithubEnv, cli: &Cli, key: &str) -> Box<dyn CommentStore> {
 }
 
 fn load_template(config: &Config) -> String {
-    let Some(TemplateSetting::File(path)) = &config.template else {
+    let Some(path) = config.template_file() else {
         return render::DEFAULT_TEMPLATE.to_string();
     };
     fs::read_to_string(path).unwrap_or_else(|e| {
@@ -240,12 +240,9 @@ pub fn run(cli: Cli, env: &GithubEnv, stdin: Option<String>) -> Result<i32> {
 
     // Every other command creates the config, with defaults filled in, if needed.
     let config_path = state_dir(env, &cli).join("config.json");
-    let (mut config, mut changed) = match &cli.command {
-        Command::Config(ConfigCommand::Load { file }) => (Config::from_file(file)?, true),
-        _ => match Config::read(&config_path)? {
-            Some(config) => (config, false),
-            None => (Config::default(), true),
-        },
+    let mut config = match &cli.command {
+        Command::Config(ConfigCommand::Load { file }) => Config::load(file)?,
+        _ => Config::read(&config_path)?,
     };
     let default_key = if env.on_github {
         env.default_comment_key()
@@ -256,24 +253,22 @@ pub fn run(cli: Cli, env: &GithubEnv, stdin: Option<String>) -> Result<i32> {
     if let Command::Config(ConfigCommand::Set { settings }) = &cli.command {
         for setting in settings {
             config.set(setting)?;
-            changed = true;
         }
     }
-    changed |= config.fill_defaults(default_key);
-    if changed {
-        config.save(&config_path)?;
-    }
+    config.fill_defaults(default_key);
+    config.save(&config_path)?;
 
     if let Command::Config(_) = cli.command {
         println!("{}", serde_json::to_string_pretty(&config)?);
         return Ok(0);
     }
 
-    let Some(key) = config.comment_key.clone() else {
+    let key = config.comment_key.clone();
+    if key.is_empty() {
         bail!(
             "cannot work out a Comment Key (GITHUB_WORKFLOW or GITHUB_JOB is unset); set one with `config set comment-key=<key>`"
         );
-    };
+    }
     let template = load_template(&config);
     let github = github_view(env);
     let run_info = RunInfo {
@@ -306,7 +301,7 @@ pub fn run(cli: Cli, env: &GithubEnv, stdin: Option<String>) -> Result<i32> {
                 None => eprintln!("status-comment: no Status Comment yet"),
             },
             PreviewTarget::Summary => {
-                let state = previous.unwrap_or_default();
+                let state = previous.unwrap_or_else(|| State::new("", 1));
                 print!(
                     "{}",
                     renderer.render(&state, Target::Summary, render::SUMMARY_LIMIT, 0)?
@@ -348,6 +343,8 @@ pub fn run(cli: Cli, env: &GithubEnv, stdin: Option<String>) -> Result<i32> {
         return Ok(0);
     }
     let mut state = State::for_run(previous, &run_id, attempt);
+    // Finalize closes the Run; anything else reopens it.
+    state.finalized = false;
     let mut publish = |state: &State| -> Result<()> {
         if !comment_ok {
             return Ok(());

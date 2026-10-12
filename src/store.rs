@@ -221,7 +221,7 @@ mod tests {
     use mockito::Matcher;
 
     fn body_for(key: &str) -> String {
-        comment::compose("table", &State::new("1"), key)
+        comment::compose("table", &State::new("1", 1), key)
     }
 
     #[test]

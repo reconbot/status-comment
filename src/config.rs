@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::str::FromStr;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -33,55 +33,32 @@ fn display_name_for(name: &str) -> String {
         .join(" ")
 }
 
+/// The `template` value meaning the built-in Template.
+const DEFAULT_TEMPLATE: &str = "default";
+
 /// An empty value removes the key, so the fallback applies again.
-fn set_or_remove(map: &mut BTreeMap<String, String>, key: &str, value: Option<String>) {
-    match value {
-        Some(value) => map.insert(key.to_string(), value),
-        None => map.remove(key),
-    };
-}
-
-/// Which Template renders the Status Comment.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "String", into = "String")]
-pub enum TemplateSetting {
-    /// The built-in Template, spelled `default`.
-    Default,
-    /// A Template file, by absolute path.
-    File(PathBuf),
-}
-
-impl From<String> for TemplateSetting {
-    fn from(s: String) -> Self {
-        if s == "default" {
-            TemplateSetting::Default
-        } else {
-            TemplateSetting::File(s.into())
-        }
-    }
-}
-
-impl From<TemplateSetting> for String {
-    fn from(t: TemplateSetting) -> String {
-        match t {
-            TemplateSetting::Default => "default".into(),
-            TemplateSetting::File(path) => path.display().to_string(),
-        }
+fn set_or_remove(map: &mut BTreeMap<String, String>, key: &str, value: &str) {
+    if value.is_empty() {
+        map.remove(key);
+    } else {
+        map.insert(key.to_string(), value.to_string());
     }
 }
 
 /// Keys are spelled as `config set` takes them. Every command fills in the
 /// defaults and writes them back, so the file shows what's in effect.
-#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub template: Option<TemplateSetting>,
+    /// `default` for the built-in Template, or a Template file's absolute path.
+    #[serde(default)]
+    pub template: String,
+    /// Empty only when there's no default to give it.
     #[serde(
         default,
         rename = "comment-key",
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "String::is_empty"
     )]
-    pub comment_key: Option<String>,
+    pub comment_key: String,
     /// How each Status is shown, by Status: `config set status.<status>=<label>`.
     #[serde(default, rename = "status", skip_serializing_if = "BTreeMap::is_empty")]
     pub status_labels: BTreeMap<String, String>,
@@ -112,48 +89,47 @@ impl FromStr for Setting {
 }
 
 impl Config {
-    /// `None` when the file doesn't exist yet.
-    pub fn read(path: &Path) -> Result<Option<Config>> {
+    /// The saved config, or an empty one when there's none yet.
+    pub fn read(path: &Path) -> Result<Config> {
         match fs::read_to_string(path) {
-            Ok(json) => serde_json::from_str(&json)
-                .map(Some)
-                .with_context(|| format!("config {} is not valid JSON", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Ok(json) => parse(&json, path),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
             Err(e) => Err(e).with_context(|| format!("reading config {}", path.display())),
         }
     }
 
-    /// Reads a config supplied by `config load`. Relative Template paths are
+    /// Reads a config supplied by `config load`. A relative Template path is
     /// resolved against the file's directory.
-    pub fn from_file(path: &Path) -> Result<Config> {
-        let mut config =
-            Config::read(path)?.ok_or_else(|| anyhow!("config {} not found", path.display()))?;
-        if let Some(TemplateSetting::File(template)) = &config.template {
+    pub fn load(path: &Path) -> Result<Config> {
+        let json = fs::read_to_string(path)
+            .with_context(|| format!("reading config {}", path.display()))?;
+        let mut config = parse(&json, path)?;
+        if !config.template.is_empty() && config.template != DEFAULT_TEMPLATE {
             let base = path.parent().unwrap_or(Path::new("."));
-            config.template = Some(TemplateSetting::File(template_path(&base.join(template))?));
+            config.template = template_path(&base.join(&config.template))?;
         }
         Ok(config)
     }
 
-    /// Fills unset keys with their defaults. Returns whether anything changed.
-    /// The Comment Key stays unset when there's no default to give it.
-    pub fn fill_defaults(&mut self, comment_key: Option<String>) -> bool {
-        let mut changed = false;
-        if self.template.is_none() {
-            self.template = Some(TemplateSetting::Default);
-            changed = true;
+    /// Fills unset keys with their defaults. The Comment Key stays empty when
+    /// there's no default to give it.
+    pub fn fill_defaults(&mut self, comment_key: Option<String>) {
+        if self.template.is_empty() {
+            self.template = DEFAULT_TEMPLATE.into();
         }
-        if self.comment_key.is_none() && comment_key.is_some() {
-            self.comment_key = comment_key;
-            changed = true;
+        if self.comment_key.is_empty() {
+            self.comment_key = comment_key.unwrap_or_default();
         }
         for (status, label) in BUILT_IN_STATUS_LABELS {
-            if !self.status_labels.contains_key(status) {
-                self.status_labels.insert(status.into(), label.into());
-                changed = true;
-            }
+            self.status_labels
+                .entry(status.into())
+                .or_insert_with(|| label.into());
         }
-        changed
+    }
+
+    /// The Template file's path, or `None` for the built-in Template.
+    pub fn template_file(&self) -> Option<&Path> {
+        (self.template != DEFAULT_TEMPLATE).then(|| Path::new(&self.template))
     }
 
     /// How a Status is shown: its configured label, or the Status itself.
@@ -175,16 +151,13 @@ impl Config {
     /// Applies one `config set` value; an empty one resets the key to its default.
     /// A relative Template path resolves against the current directory.
     pub fn set(&mut self, setting: &Setting) -> Result<()> {
-        let value = (!setting.value.is_empty()).then(|| setting.value.clone());
+        let value = setting.value.as_str();
         match setting.key.as_str() {
-            "template" => {
-                self.template = match value.as_deref() {
-                    None => None,
-                    Some("default") => Some(TemplateSetting::Default),
-                    Some(path) => Some(TemplateSetting::File(template_path(Path::new(path))?)),
-                }
+            "template" if value.is_empty() || value == DEFAULT_TEMPLATE => {
+                self.template = value.into()
             }
-            "comment-key" => self.comment_key = value,
+            "template" => self.template = template_path(Path::new(value))?,
+            "comment-key" => self.comment_key = value.into(),
             key => match key.split_once('.') {
                 Some(("status", status)) => set_or_remove(&mut self.status_labels, status, value),
                 Some(("step", step)) => set_or_remove(&mut self.step_names, step, value),
@@ -205,9 +178,16 @@ impl Config {
     }
 }
 
+fn parse(json: &str, path: &Path) -> Result<Config> {
+    serde_json::from_str(json)
+        .with_context(|| format!("config {} is not valid JSON", path.display()))
+}
+
 /// The Template's absolute path, once it's known to exist.
-fn template_path(path: &Path) -> Result<PathBuf> {
-    fs::canonicalize(path).with_context(|| format!("reading Template {}", path.display()))
+fn template_path(path: &Path) -> Result<String> {
+    let path =
+        fs::canonicalize(path).with_context(|| format!("reading Template {}", path.display()))?;
+    Ok(path.display().to_string())
 }
 
 #[cfg(test)]

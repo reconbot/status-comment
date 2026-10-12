@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn large_outputs_keep_head_and_tail_and_link_to_the_run() {
-        let mut state = State::new("1");
+        let mut state = State::new("1", 1);
         let lines: String = (0..20_000).map(|i| format!("line {i}\n")).collect();
         let big = format!("ROOT CAUSE\n{lines}THE ERROR\n");
         record(&mut state, "plan", Status::Failure, Some(&big));

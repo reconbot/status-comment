@@ -83,9 +83,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release-please.outputs.tag }}
 
+  # crates.io is permanent, so it only publishes once the GitHub Release is out.
   crate:
-    needs: release-please
-    if: needs.release-please.outputs.created == 'true'
+    needs: [release-please, publish]
     runs-on: ubuntu-latest
     environment: release
     permissions:

@@ -71,6 +71,18 @@ jobs:
           tar -czf "$archive" -C "target/$TARGET/release" status-comment
           gh release upload "$TAG" "$archive" --clobber
 
+  # Publishing makes the release immutable, so it waits until every binary is attached.
+  publish:
+    needs: [release-please, binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - run: gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-please.outputs.tag }}
+
   crate:
     needs: release-please
     if: needs.release-please.outputs.created == 'true'

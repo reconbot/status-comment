@@ -8,14 +8,15 @@ use std::str::FromStr;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
-/// How each Built-in Status is shown until `config set status.<name>=…` changes it.
-const BUILT_IN_STATUS_LABELS: [(&str, &str); 6] = [
-    ("pending", "⬜ Pending"),
-    ("running", "⏳ Running…"),
-    ("success", "✅ Success"),
-    ("failure", "❌ Failed"),
-    ("skipped", "⏭️ Skipped"),
-    ("cancelled", "🚫 Cancelled"),
+/// How each Built-in Status is shown, and whether its Output starts expanded,
+/// until `config set status.<name>.display=…` or `.show-output=…` changes it.
+const BUILT_IN_STATUSES: [(&str, &str, bool); 6] = [
+    ("pending", "⬜ Pending", false),
+    ("running", "⏳ Running…", false),
+    ("success", "✅ Success", false),
+    ("failure", "❌ Failed", true),
+    ("skipped", "⏭️ Skipped", false),
+    ("cancelled", "🚫 Cancelled", true),
 ];
 
 /// `rules-check` → `Rules Check`.
@@ -45,6 +46,27 @@ fn set_or_remove(map: &mut BTreeMap<String, String>, key: &str, value: &str) {
     }
 }
 
+/// How one Status is shown: `config set status.<status>.display=…` and `.show-output=…`.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct StatusConfig {
+    /// Empty means the Status itself.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub display: String,
+    /// Whether the Template shows Output expanded; unset means collapsed.
+    #[serde(
+        default,
+        rename = "show-output",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub show_output: Option<bool>,
+}
+
+impl StatusConfig {
+    fn is_empty(&self) -> bool {
+        self.display.is_empty() && self.show_output.is_none()
+    }
+}
+
 /// Keys are spelled as `config set` takes them. Every command fills in the
 /// defaults and writes them back, so the file shows what's in effect.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -59,9 +81,9 @@ pub struct Config {
         skip_serializing_if = "String::is_empty"
     )]
     pub comment_key: String,
-    /// How each Status is shown, by Status: `config set status.<status>=<label>`.
+    /// How each Status is shown, by Status: `config set status.<status>.<field>=…`.
     #[serde(default, rename = "status", skip_serializing_if = "BTreeMap::is_empty")]
-    pub status_labels: BTreeMap<String, String>,
+    pub statuses: BTreeMap<String, StatusConfig>,
     /// Display names, by Step name: `config set step.<name>=<display name>`.
     #[serde(default, rename = "step", skip_serializing_if = "BTreeMap::is_empty")]
     pub step_names: BTreeMap<String, String>,
@@ -123,10 +145,12 @@ impl Config {
         if self.comment_key.is_empty() {
             self.comment_key = comment_key.unwrap_or_default();
         }
-        for (status, label) in BUILT_IN_STATUS_LABELS {
-            self.status_labels
-                .entry(status.into())
-                .or_insert_with(|| label.into());
+        for (status, display, show_output) in BUILT_IN_STATUSES {
+            let config = self.statuses.entry(status.into()).or_default();
+            if config.display.is_empty() {
+                config.display = display.into();
+            }
+            config.show_output.get_or_insert(show_output);
         }
     }
 
@@ -135,12 +159,21 @@ impl Config {
         (self.template != DEFAULT_TEMPLATE).then(|| Path::new(&self.template))
     }
 
-    /// How a Status is shown: its configured label, or the Status itself.
+    /// How a Status is shown: its configured display, or the Status itself.
     pub fn status_label(&self, status: &str) -> String {
-        self.status_labels
+        self.statuses
             .get(status)
-            .cloned()
+            .map(|c| c.display.clone())
+            .filter(|d| !d.is_empty())
             .unwrap_or_else(|| status.to_string())
+    }
+
+    /// Whether a Status's Output is shown expanded.
+    pub fn show_output(&self, status: &str) -> bool {
+        self.statuses
+            .get(status)
+            .and_then(|c| c.show_output)
+            .unwrap_or(false)
     }
 
     /// A Step's display name: the configured one, or the title-cased name.
@@ -163,12 +196,34 @@ impl Config {
             "comment-key" => self.comment_key = value.into(),
             "token" => self.token = value.into(),
             key => match key.split_once('.') {
-                Some(("status", status)) => set_or_remove(&mut self.status_labels, status, value),
+                Some(("status", rest)) => match rest.rsplit_once('.') {
+                    Some((status, field)) => self.set_status(key, status, field, value)?,
+                    None => bail!(unknown_key(key)),
+                },
                 Some(("step", step)) => set_or_remove(&mut self.step_names, step, value),
-                _ => bail!(
-                    "unknown config key {key:?}; known keys: template, comment-key, token, status.<status>, step.<step>"
-                ),
+                _ => bail!(unknown_key(key)),
             },
+        }
+        Ok(())
+    }
+
+    /// Applies `status.<status>.<field>=…`; an emptied Status is removed.
+    fn set_status(&mut self, key: &str, status: &str, field: &str, value: &str) -> Result<()> {
+        let config = self.statuses.entry(status.into()).or_default();
+        match field {
+            "display" => config.display = value.into(),
+            "show-output" => {
+                config.show_output = match value {
+                    "" => None,
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => bail!("{key} must be true or false, not {value:?}"),
+                }
+            }
+            _ => bail!(unknown_key(key)),
+        }
+        if config.is_empty() {
+            self.statuses.remove(status);
         }
         Ok(())
     }
@@ -180,6 +235,12 @@ impl Config {
         let json = serde_json::to_string_pretty(self)?;
         fs::write(path, json + "\n").with_context(|| format!("writing config {}", path.display()))
     }
+}
+
+fn unknown_key(key: &str) -> String {
+    format!(
+        "unknown config key {key:?}; known keys: template, comment-key, token, status.<status>.display, status.<status>.show-output, step.<step>"
+    )
 }
 
 fn parse(json: &str, path: &Path) -> Result<Config> {

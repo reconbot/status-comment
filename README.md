@@ -66,7 +66,7 @@ cargo install status-comment
 status-comment steps set init validate plan apply
 
 # Name a Step and label a Custom Status for the next update
-status-comment config set step.plan='Terraform Plan' status.changes='🔍 Changes detected'
+status-comment config set step.plan='Terraform Plan' status.changes.display='🔍 Changes detected'
 
 # Use your own minijinja Template with
 status-comment config set template=.github/terraform-comment.md.j2
@@ -114,7 +114,8 @@ The first command to run (any but `default-template`) creates `config.json` in t
 |---|---|---|
 | `template` | `default` | `default` for the built-in Template, or a Template file path, saved as absolute. Later edits to the file apply. |
 | `comment-key` | "$GITHUB_WORKFLOW/$GITHUB_JOB" on GitHub; `local` in Local Mode | Key to find the comment to update. |
-| `status.<status>` | `status.success=✅ Success` and the like for each Built-in Status | How a Status is shown. Any Status can have one, e.g. `status.changes='🔍 Changes detected'`; without one, a Custom Status shows as its name. |
+| `status.<status>.display` | `status.success.display=✅ Success` and the like for each Built-in Status | How a Status is shown. Any Status can have one, e.g. `status.changes.display='🔍 Changes detected'`; without one, a Custom Status shows as its name. |
+| `status.<status>.show-output` | `true` for `failure` and `cancelled`; `false` for the other Built-in Statuses | `true` or `false`: whether the default Template shows a Step's Output expanded instead of collapsed. Any Status can have one; without one, Output is collapsed. |
 | `step.<step>` | none: the title-cased name (`rules-check` → `Rules Check`) | A Step's display name, e.g. `step.rules-check='OPA Rules'`. |
 | `token` | none | GitHub token. `--token` beats it; it beats `$GITHUB_TOKEN`. `config load` replaces it like any other key. |
 
@@ -149,7 +150,7 @@ Any Built-in Status can also be set with `step --status` or `--exit-code-map`. A
 
 - Creates and updates a comment on the PR. State is stored in the comment so different jobs may update different steps.
 - A new run ID starts the Steps fresh; re-run attempts keep them.
-- Long outputs get truncated to stay under the comment character limit priortizing failing steps.
+- Long outputs get truncated to stay under the comment character limit, prioritizing Steps whose Status has `show-output`.
 - Leaves a job summary on finalization.
 
 ## Local Mode
@@ -174,7 +175,7 @@ Templates are [minijinja](https://github.com/mitsuhiko/minijinja) (Jinja2) files
 
 | Variable | Contents |
 |---|---|
-| `steps[]` | `name`, `display_name` and `status_label` (from the config), `status`, `failing`, `has_output` |
+| `steps[]` | `name`, `display_name`, `status_label` and `show_output` (from the config), `status`, `failing`, `has_output` |
 | `run` | `id`, `attempt`, `url`, `failing`, `finalized` |
 | `github` | `workflow`, `job`, `actor`, `repository`, `sha`, `short_sha`, `pr_number`, `pr_url`, `server_url`, `updated_at` |
 | `target` | `"comment"` or `"summary"` |

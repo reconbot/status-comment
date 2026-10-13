@@ -60,6 +60,7 @@ struct StepView<'a> {
     status_label: String,
     failing: bool,
     has_output: bool,
+    show_output: bool,
 }
 
 #[derive(Serialize)]
@@ -96,14 +97,18 @@ impl Renderer<'_> {
             .iter()
             .map(|o| o.as_ref().map_or(0, |o| o.chars().count()))
             .collect();
-        let failing: Vec<bool> = state.steps.iter().map(|s| s.status.is_failing()).collect();
+        let shown: Vec<bool> = state
+            .steps
+            .iter()
+            .map(|s| self.config.show_output(s.status.as_str()))
+            .collect();
         let total: usize = lengths.iter().sum();
         let mut last = body;
         // A Template may render an Output twice or wrap it: shrink and re-check
         // instead of trusting one estimate.
         for _ in 0..5 {
             let budget = total.saturating_sub(excess + 256 * state.steps.len());
-            let caps = allocate(&lengths, &failing, budget);
+            let caps = allocate(&lengths, &shown, budget);
             let outputs: Vec<Option<String>> = full
                 .iter()
                 .zip(&caps)
@@ -179,6 +184,7 @@ impl Renderer<'_> {
                 status_label: self.config.status_label(s.status.as_str()),
                 failing: s.status.is_failing(),
                 has_output: o.is_some(),
+                show_output: self.config.show_output(s.status.as_str()),
             })
             .collect();
         let run = RunView {
@@ -200,15 +206,13 @@ impl Renderer<'_> {
     }
 }
 
-/// Splits `budget` bytes between Outputs: Failing Steps first, equal shares
-/// within a group, unused share passed on.
-fn allocate(lengths: &[usize], failing: &[bool], budget: usize) -> Vec<usize> {
+/// Splits `budget` bytes between Outputs: Steps whose Status has `show-output`
+/// first, equal shares within a group, unused share passed on.
+fn allocate(lengths: &[usize], shown: &[bool], budget: usize) -> Vec<usize> {
     let mut caps = vec![0; lengths.len()];
     let mut remaining = budget;
     for group in [true, false] {
-        let mut members: Vec<usize> = (0..lengths.len())
-            .filter(|&i| failing[i] == group)
-            .collect();
+        let mut members: Vec<usize> = (0..lengths.len()).filter(|&i| shown[i] == group).collect();
         members.sort_by_key(|&i| lengths[i]);
         let mut left = members.len();
         for i in members {
@@ -324,6 +328,40 @@ mod tests {
     }
 
     #[test]
+    fn shown_outputs_are_truncated_last() {
+        let mut config = config();
+        for setting in [
+            "status.changes.show-output=true",
+            "status.failure.show-output=false",
+        ] {
+            config.set(&setting.parse().unwrap()).unwrap();
+        }
+        let mut state = State::new("1", 1);
+        let plan = format!("{}PLAN END\n", "p\n".repeat(15_000));
+        record(&mut state, "plan", Status::from("changes"), Some(&plan));
+        record(
+            &mut state,
+            "lint",
+            Status::Failure,
+            Some(&"l\n".repeat(50_000)),
+        );
+        let github = github();
+        let body = Renderer {
+            template: DEFAULT_TEMPLATE,
+            github: &github,
+            run_url: None,
+            config: &config,
+        }
+        .render(&state, Target::Comment, 0)
+        .unwrap();
+        assert!(body.contains(&plan), "the shown Output is kept whole");
+        assert!(
+            body.contains(&format!("lines {OMITTED}")),
+            "the other is cut"
+        );
+    }
+
+    #[test]
     fn truncation_cuts_between_whole_lines() {
         let text: String = (0..100).map(|i| format!("line {i}\n")).collect();
         let out = truncate_middle(&text, 200);
@@ -347,8 +385,8 @@ mod tests {
     }
 
     #[test]
-    fn allocate_prioritises_failing_steps() {
-        // Failing step needs 80 and gets it; the other two split the remaining 20.
+    fn allocate_prioritizes_shown_steps() {
+        // The shown step needs 80 and gets it; the other two split the remaining 20.
         assert_eq!(
             allocate(&[80, 50, 50], &[true, false, false], 100),
             [80, 10, 10]

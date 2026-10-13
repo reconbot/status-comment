@@ -136,7 +136,7 @@ fn full_run_without_a_pull_request() {
     assert!(comment.contains("| Init | ✅ Success |"), "{comment}");
     assert!(comment.contains("| Plan | changes |"), "{comment}");
     assert!(comment.contains("| Apply | ⏭️ Skipped |"), "{comment}");
-    assert!(comment.contains("| 🎉 | All done |"), "{comment}");
+    assert!(comment.contains("| Party | 🎉 💃🕺 |"), "{comment}");
     assert!(
         comment.contains("<details><summary>Init output</summary>"),
         "{comment}"
@@ -283,8 +283,8 @@ fn status_labels_come_from_the_config() {
         .args([
             "config",
             "set",
-            "status.changes=🔍 Changes detected",
-            "status.failure=💥 Broken",
+            "status.changes.display=🔍 Changes detected",
+            "status.failure.display=💥 Broken",
         ])
         .assert()
         .success();
@@ -305,6 +305,78 @@ fn status_labels_come_from_the_config() {
 }
 
 #[test]
+fn failing_output_is_expanded_and_the_rest_collapsed_by_default() {
+    let job = Job::new();
+    job.cmd()
+        .args(["step", "lint", "--status", "failure"])
+        .write_stdin("lint broke\n")
+        .assert()
+        .success();
+    job.cmd()
+        .args(["step", "plan"])
+        .write_stdin("plan ok\n")
+        .assert()
+        .success();
+    let comment = job.comment();
+    assert!(comment.contains("#### Lint output"), "{comment}");
+    assert!(
+        comment.contains("<details><summary>Plan output</summary>"),
+        "{comment}"
+    );
+}
+
+#[test]
+fn show_output_expands_a_status() {
+    let job = Job::new();
+    job.cmd()
+        .args([
+            "config",
+            "set",
+            "status.changes.show-output=true",
+            "status.failure.show-output=false",
+        ])
+        .assert()
+        .success();
+    job.cmd()
+        .args(["step", "plan", "--status", "changes"])
+        .write_stdin("1 to add\n")
+        .assert()
+        .success();
+    job.cmd()
+        .args(["step", "lint", "--status", "failure"])
+        .write_stdin("lint broke\n")
+        .assert()
+        .success();
+    let comment = job.comment();
+    assert!(comment.contains("#### Plan output"), "{comment}");
+    assert!(
+        comment.contains("<details><summary>Lint output</summary>"),
+        "{comment}"
+    );
+    assert!(comment.contains("| Plan | changes |"), "{comment}");
+}
+
+#[test]
+fn show_output_takes_only_true_or_false() {
+    let job = Job::new();
+    job.cmd()
+        .args(["config", "set", "status.failure.show-output=yes"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("must be true or false"));
+}
+
+#[test]
+fn a_bare_status_key_is_unknown() {
+    let job = Job::new();
+    job.cmd()
+        .args(["config", "set", "status.failure=💥 Broken"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown config key"));
+}
+
+#[test]
 fn an_empty_value_resets_a_label() {
     let job = Job::new();
     job.cmd()
@@ -312,12 +384,12 @@ fn an_empty_value_resets_a_label() {
             "config",
             "set",
             "step.plan=Terraform Plan",
-            "status.failure=💥 Broken",
+            "status.failure.display=💥 Broken",
         ])
         .assert()
         .success();
     job.cmd()
-        .args(["config", "set", "step.plan=", "status.failure="])
+        .args(["config", "set", "step.plan=", "status.failure.display="])
         .assert()
         .success()
         .stdout(predicate::str::contains("Terraform Plan").not())
@@ -451,7 +523,8 @@ fn config_set_comment_key_marks_the_comment() {
         .stdout(predicate::str::contains(
             r#""comment-key": "Terraform/plan""#,
         ))
-        .stdout(predicate::str::contains(r#""failure": "❌ Failed""#));
+        .stdout(predicate::str::contains(r#""display": "❌ Failed""#))
+        .stdout(predicate::str::contains(r#""show-output": true"#));
     job.cmd()
         .args(["config", "set", "comment-key=prod"])
         .assert()

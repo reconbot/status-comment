@@ -1,30 +1,89 @@
 # Status Comment
 
-Keeps a pull request comment up to date with a GitHub Actions job's Steps: each Step's Status and Output. Vocabulary: [CONTEXT.md](./CONTEXT.md). Decisions: [docs/adr](./docs/adr).
+Keeps a pull request comment up to date with steps of a GitHub Actions job's. Record commands status and outputs for easy viewing. Also updates the job summary. Customizable with a [minijinja template](https://github.com/mitsuhiko/minijinja). This repo contains both the cli and the github action.
 
-## Usage
+![Comment](./docs/comment.png)
+![Summary](./docs/summary.png)
+
+## Installation
+
+### GitHub
+
+In a workflow, this repo is also an action that installs the binary and puts it on `PATH`:
+
+```yaml
+permissions:
+  pull-requests: write
+steps:
+  - uses: reconbot/status-comment@v0.4.0
+    with:
+      token: ${{ github.token }}
+  - run: status-comment steps set build test
+  - run: status-comment exec build 'cargo build'
+  - run: status-comment exec test 'cargo test'
+```
+
+By default it installs the latest version. To specify another version;
+
+```yaml
+steps:
+  - uses: reconbot/status-comment@v0.4.0
+    with:
+      version: v0.4.0
+```
+
+The `token` input is saved to the config, so every later call uses it, the end-of-job `finalize` included, and no other step sees it. Instead, you can set `GITHUB_TOKEN` at the job level so `finalize` sees it too:
+
+```yaml
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+```
+
+To load a config file, give its path; a `token` input is applied after it:
+
+```yaml
+steps:
+  - uses: reconbot/status-comment@v0.4.0
+    with:
+      config-path: .github/status-comment.json
+      token: ${{ github.token }}
+```
+
+Both inputs write to the default state directory. If you use `--state-path`, run `config load` and `config set token=…` with it yourself.
+
+At the end of the job, even a failed one, the action runs `status-comment finalize` for you. It does nothing if no Steps were recorded, and never fails the job. Set `with: finalize: false` to call `finalize` yourself instead. Builds exist for Linux x86_64, Linux arm64 and macOS arm64; each release also has them as `status-comment-<target>.tar.gz`.
+
+### Local
 
 ```bash
-# Set the Steps, in order
-status-comment steps set init validate plan rules-check apply
+cargo install status-comment
+```
 
-# Name a Step and label a Custom Status
-status-comment config set step.rules-check='OPA Rules' status.changes='🔍 Changes detected'
+## CLI Usage
 
-# Use your own Template
+```bash
+# Set the Steps, in order, pending by default
+status-comment steps set init validate plan apply
+
+# Name a Step and label a Custom Status for the next update
+status-comment config set step.plan='Terraform Plan' status.changes='🔍 Changes detected'
+
+# Use your own minijinja Template with
 status-comment config set template=.github/terraform-comment.md.j2
 
 # Run a command: the Step shows `running`, then the exit code picks its Status
 status-comment exec plan --exit-code-map 0=success,1=failure,2=changes 'terraform plan -detailed-exitcode'
 
-# Set a Status directly; piped stdin becomes the Output
-status-comment step apply --status running
-terraform apply | status-comment step apply
+# Set a Status of a step directly, then pipe the output to
+status-comment step validate --status success
 
-# Close out the Run
+# Pipe output of a command to the output of the step
+./init.sh | status-comment init apply
+
+# Mark the run as finished (automatically done with the action)
 status-comment finalize
 
-# Print the stored comment without changing anything
+# Preview the comment with current settings and output
 status-comment preview
 ```
 
@@ -43,9 +102,9 @@ status-comment preview
 | `config set <key>=<value>...` | Change one or more keys and print the result. |
 | `config load <file>` | Replace the config with a JSON file and print the result. Relative `template` paths resolve against that file's directory. |
 | `preview [--target comment\|summary]` | Print the whole stored comment exactly as saved, hidden markers included (default), or the job summary it would produce. Changes nothing. |
-| `default-template` | Print the built-in Template. |
+| `default-template` | Print the built-in Template for hacking yourself. |
 
-Every command also takes `--state-path <dir>` (where `config.json` lives, and `comment.md` when there's no PR; default `$RUNNER_TEMP/status-comment`, or `.` in Local Mode) and `--token <token>` (default `$GITHUB_TOKEN`).
+Every command also takes `--state-path <dir>` (where `config.json` lives, and `comment.md` when there's no PR; default `$RUNNER_TEMP/status-comment`, or `.` in Local Mode) and `--token <token>` (default: the config's `token`, then `$GITHUB_TOKEN`).
 
 ### Config keys
 
@@ -57,16 +116,17 @@ The first command to run (any but `default-template`) creates `config.json` in t
 | `comment-key` | "$GITHUB_WORKFLOW/$GITHUB_JOB" on GitHub; `local` in Local Mode | Key to find the comment to update. |
 | `status.<status>` | `status.success=✅ Success` and the like for each Built-in Status | How a Status is shown. Any Status can have one, e.g. `status.changes='🔍 Changes detected'`; without one, a Custom Status shows as its name. |
 | `step.<step>` | none: the title-cased name (`rules-check` → `Rules Check`) | A Step's display name, e.g. `step.rules-check='OPA Rules'`. |
+| `token` | none | GitHub token. `--token` beats it; it beats `$GITHUB_TOKEN`. `config load` replaces it like any other key. |
 
-An empty value (`step.rules-check=`) resets any key to its default. Labels live only in the config, never in the comment ([ADR 0002](./docs/adr/0002-presentation-lives-in-the-config.md)), so each job sets its own.
+An empty value (`step.rules-check=`) resets any key to its default.
 
 If using a matrix in your workflow and want different comments you might want to append something from the matrix:
 
 ```bash
-status-comment config set comment-key="$GITHUB_WORKFLOW/$GITHUB_JOB/${{ matrix.dir }}"
+status-comment config set comment-key="$GITHUB_WORKFLOW/$GITHUB_JOB/${{ matrix.setting }}"
 ```
 
-Jobs that share a Comment Key each need the same labels; keep them in a checked-in file and run `status-comment config load .github/status-comment.json` in every job.
+Jobs that share a Comment Key each need the same labels; keep them in a checked-in file and pass it as the action's `config-path` in every job.
 
 ## Statuses and exit codes
 
@@ -87,12 +147,10 @@ Any Built-in Status can also be set with `step --status` or `--exit-code-map`. A
 
 ## How it works
 
-- One Status Comment per Comment Key, found by a hidden marker and updated in place. Only comments written by the same token count, so a copied marker in someone else's comment is ignored.
-- A new run ID starts the Steps fresh; re-run attempts keep them. A run never overwrites a comment already written by a newer run or attempt; it warns instead.
-- A comment written by another status-comment version is started over, in place.
-- Outputs share GitHub's 65,536-character limit. Failing Steps get priority. A truncated Output keeps whole lines from its start and end, and links to the workflow run, whose log has all of it.
-- The comment and the job summary render from the same Template.
-- Without a PR (e.g. on `push`) the comment is `comment.md` in the state path, and `finalize` still writes the job summary.
+- Creates and updates a comment on the PR. State is stored in the comment so different jobs may update different steps.
+- A new run ID starts the Steps fresh; re-run attempts keep them.
+- Long outputs get truncated to stay under the comment character limit priortizing failing steps.
+- Leaves a job summary on finalization.
 
 ## Local Mode
 
@@ -160,30 +218,6 @@ enum Status {
 }
 ```
 
-## Installation
-
-In a workflow, this repo is also an action that installs the binary and puts it on `PATH`:
-
-```yaml
-permissions:
-  pull-requests: write
-env:
-  GITHUB_TOKEN: ${{ github.token }}   # job-level, so the end-of-job finalize sees it too
-steps:
-  - uses: reconbot/status-comment@vX.Y.Z   # a release tag
-  - run: status-comment steps set build test
-  - run: status-comment exec build 'cargo build'
-  - run: status-comment exec test 'cargo test'
-```
-
-It installs the release matching the tag you use, or the latest release otherwise (set `with: version: vX.Y.Z` when pinning to a commit SHA).
-
-At the end of the job, even a failed one, the action runs `status-comment finalize` for you. It does nothing if no Steps were recorded, and never fails the job. Set `with: finalize: false` to call `finalize` yourself instead. Builds exist for Linux x86_64, Linux arm64 and macOS arm64; each release also has them as `status-comment-<target>.tar.gz`.
-
-Locally: `cargo install status-comment`.
-
-Releases are cut by [release-please](https://github.com/googleapis/release-please) from [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`) on `main`.
-
 ## License
 
 [Apache-2.0](./LICENSE)
@@ -198,3 +232,5 @@ git config commit.template .gitmessage   # commit types cheat sheet
 mise exec -- cargo test
 mise exec -- cargo clippy --all-targets
 ```
+
+Releases are cut by [release-please](https://github.com/googleapis/release-please) from [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`) on `main`.

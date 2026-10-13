@@ -6,7 +6,13 @@ branding:
 
 inputs:
   version:
-    description: Release to install, e.g. v0.1.0. Defaults to the tag this action is used at, or the latest release.
+    description: Release to install, e.g. v0.1.0. Defaults to the latest release.
+    default: ""
+  config-path:
+    description: A config JSON file to load with `status-comment config load`.
+    default: ""
+  token:
+    description: GitHub token saved to the config with `status-comment config set token=…`, after any `config-path` is loaded. Used by every later call, including finalize.
     default: ""
   finalize:
     description: Run `status-comment finalize` at the end of the job, even when it fails. Set to false to finalize yourself.

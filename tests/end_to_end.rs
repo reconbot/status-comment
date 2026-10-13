@@ -633,6 +633,49 @@ fn pull_request_creates_the_status_comment() {
     create.assert();
 }
 
+/// A PR with no comments yet that expects the Status Comment created with `token`.
+fn expect_create_with_token(server: &mut mockito::ServerGuard, token: &str) -> mockito::Mock {
+    server
+        .mock("POST", "/graphql")
+        .with_body(comments_page(&[]))
+        .create();
+    server
+        .mock("POST", "/repos/o/r/issues/5/comments")
+        .match_header("authorization", format!("Bearer {token}").as_str())
+        .with_status(201)
+        .with_body(r#"{"id":77,"body":""}"#)
+        .create()
+}
+
+#[test]
+fn config_token_beats_github_token() {
+    let mut server = mockito::Server::new();
+    let create = expect_create_with_token(&mut server, "from-config");
+    let job = Job::new().with_pull_request(&server.url());
+    job.cmd()
+        .args(["config", "set", "token=from-config"])
+        .assert()
+        .success();
+    job.cmd().args(["step", "plan"]).assert().success();
+    create.assert();
+}
+
+#[test]
+fn token_flag_beats_config_token() {
+    let mut server = mockito::Server::new();
+    let create = expect_create_with_token(&mut server, "from-flag");
+    let job = Job::new().with_pull_request(&server.url());
+    job.cmd()
+        .args(["config", "set", "token=from-config"])
+        .assert()
+        .success();
+    job.cmd()
+        .args(["--token", "from-flag", "step", "plan"])
+        .assert()
+        .success();
+    create.assert();
+}
+
 #[test]
 fn pull_request_updates_existing_comment_keeping_other_steps() {
     // Build a realistic existing comment without a PR first.

@@ -39,7 +39,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub state_path: Option<PathBuf>,
 
-    /// GitHub token [default: $GITHUB_TOKEN]
+    /// GitHub token [default: config `token`, then $GITHUB_TOKEN]
     #[arg(long, global = true)]
     pub token: Option<String>,
 
@@ -306,6 +306,7 @@ impl<'a> StatusComment<'a> {
                 render::DEFAULT_TEMPLATE.to_string()
             }),
         };
+        let token = token.or_else(|| Some(config.token.clone()).filter(|t| !t.is_empty()));
         let store = open_store(env, state_dir, token, &config.comment_key);
         Ok(StatusComment {
             env,
@@ -481,7 +482,7 @@ fn open_store(
             ));
         }
         (Some(_), _, None) => env.warn(
-            "no GitHub token (set GITHUB_TOKEN or pass --token); skipping the Status Comment",
+            "no GitHub token (pass --token, `config set token=…` or set GITHUB_TOKEN); skipping the Status Comment",
         ),
         _ => {}
     }

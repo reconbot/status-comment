@@ -65,6 +65,9 @@ pub struct Config {
     /// Display names, by Step name: `config set step.<name>=<display name>`.
     #[serde(default, rename = "step", skip_serializing_if = "BTreeMap::is_empty")]
     pub step_names: BTreeMap<String, String>,
+    /// GitHub token; beats `$GITHUB_TOKEN` but not `--token`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub token: String,
 }
 
 /// A `config set` argument: `KEY=VALUE`.
@@ -158,11 +161,12 @@ impl Config {
             }
             "template" => self.template = template_path(Path::new(value))?,
             "comment-key" => self.comment_key = value.into(),
+            "token" => self.token = value.into(),
             key => match key.split_once('.') {
                 Some(("status", status)) => set_or_remove(&mut self.status_labels, status, value),
                 Some(("step", step)) => set_or_remove(&mut self.step_names, step, value),
                 _ => bail!(
-                    "unknown config key {key:?}; known keys: template, comment-key, status.<status>, step.<step>"
+                    "unknown config key {key:?}; known keys: template, comment-key, token, status.<status>, step.<step>"
                 ),
             },
         }

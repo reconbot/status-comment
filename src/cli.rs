@@ -93,7 +93,8 @@ Defaults, as the equivalent commands:
   config set template=default
   config set comment-key=\"$GITHUB_WORKFLOW/$GITHUB_JOB\"   (on GitHub)
   config set comment-key=local                           (in Local Mode)
-  config set status.success=\"✅ Success\"                  (and so on for each Built-in Status)"
+  config set status.success.display=\"✅ Success\"          (and so on for each Built-in Status)
+  config set status.failure.show-output=true               (and cancelled; false for the rest)"
     )]
     Config(ConfigCommand),
 
@@ -123,8 +124,8 @@ pub enum StepsCommand {
 pub enum ConfigCommand {
     /// Print the current config.
     List,
-    /// Set values and print the result: `template=<file|default>`, `comment-key=<key>`,
-    /// `status.<status>=<label>`, `step.<step>=<display name>`.
+    /// Set values and print the result: `template=<file|default>`, `comment-key=<key>`, `token=<token>`,
+    /// `status.<status>.display=<label>`, `status.<status>.show-output=true|false`, `step.<step>=<display name>`.
     Set {
         #[arg(required = true, value_name = "KEY=VALUE")]
         settings: Vec<Setting>,

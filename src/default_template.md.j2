@@ -15,11 +15,13 @@
 | {{ step.display_name | replace("|", "\\|") }} | {{ step.status_label | replace("|", "\\|") }} |
 {% endfor %}
 {% if run.finalized and not run.failing %}
-| 🎉 | All done |
+| Party | 🎉 💃🕺 |
 {% endif %}
-{% for step in steps if step.has_output %}
+{% for step in steps if step.has_output or step.status not in ["pending", "running", "skipped"] %}
 
-{% if step.failing %}
+{% if not step.has_output %}
+_{{ step.display_name }}: no output_
+{% elif step.show_output %}
 #### {{ step.display_name }} output
 
 {{ step | output }}

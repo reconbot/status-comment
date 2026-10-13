@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/reconbot/status-comment/compare/v0.4.0...v0.5.0) (2026-10-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* `status.<status>=<label>` is now `status.<status>.display=<label>`, and the config's `status` entries are objects (`{"display": …, "show-output": …}`). Old config files no longer load.
+* so many edge case behaviors are now improved, biggest is the install version behavior
+* move display names to config ([#5](https://github.com/reconbot/status-comment/issues/5))
+
+### Features
+
+* configure if a steps output is displayed by default ([#8](https://github.com/reconbot/status-comment/issues/8)) ([1603267](https://github.com/reconbot/status-comment/commit/16032671250d9454e1cc152a73e7ff849c381867))
+* move display names to config ([#5](https://github.com/reconbot/status-comment/issues/5)) ([e94d53a](https://github.com/reconbot/status-comment/commit/e94d53aebe62445edf5cd3009bcdf2f855c4290c))
+* show command output, store github tokens, and more! ([#7](https://github.com/reconbot/status-comment/issues/7)) ([6615605](https://github.com/reconbot/status-comment/commit/661560545fa1f53bd1fced33b1f40d010251113d))
+
 ## [0.4.0](https://github.com/reconbot/status-comment/compare/v0.3.0...v0.4.0) (2026-10-12)
 
 

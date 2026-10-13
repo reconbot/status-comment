@@ -13,18 +13,28 @@ use crate::state::State;
 pub const DEFAULT_TEMPLATE: &str = include_str!("default_template.md.j2");
 
 /// GitHub's comment body limit, in characters.
-pub const COMMENT_LIMIT: usize = 65_536;
+const COMMENT_LIMIT: usize = 65_536;
 
 /// Ends the line that replaces the middle of a truncated Output.
 const OMITTED: &str = "omitted by status-comment …";
 /// GitHub's limit for one step's job summary.
-pub const SUMMARY_LIMIT: usize = 1024 * 1024;
+const SUMMARY_LIMIT: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Target {
     Comment,
     Summary,
+}
+
+impl Target {
+    /// How many characters GitHub accepts.
+    fn limit(self) -> usize {
+        match self {
+            Target::Comment => COMMENT_LIMIT,
+            Target::Summary => SUMMARY_LIMIT,
+        }
+    }
 }
 
 /// What a Template can see about the GitHub context.
@@ -42,12 +52,6 @@ pub struct GithubView {
     pub updated_at: String,
 }
 
-#[derive(Default)]
-pub struct RunInfo {
-    pub url: Option<String>,
-    pub attempt: String,
-}
-
 #[derive(Serialize)]
 struct StepView<'a> {
     name: &'a str,
@@ -61,7 +65,7 @@ struct StepView<'a> {
 #[derive(Serialize)]
 struct RunView<'a> {
     id: &'a str,
-    attempt: &'a str,
+    attempt: u32,
     url: Option<&'a str>,
     failing: bool,
     finalized: bool,
@@ -70,21 +74,17 @@ struct RunView<'a> {
 pub struct Renderer<'a> {
     pub template: &'a str,
     pub github: &'a GithubView,
-    pub run: &'a RunInfo,
+    /// The workflow run's page, linked when Output is truncated.
+    pub run_url: Option<&'a str>,
     /// Display names and Status labels.
     pub config: &'a Config,
 }
 
 impl Renderer<'_> {
-    /// Renders the Template, truncating Outputs so the result plus `reserve` bytes
-    /// fits in `limit`.
-    pub fn render(
-        &self,
-        state: &State,
-        target: Target,
-        limit: usize,
-        reserve: usize,
-    ) -> Result<String> {
+    /// Renders the Template, truncating Outputs so the result plus `reserve`
+    /// characters fits in what GitHub accepts for `target`.
+    pub fn render(&self, state: &State, target: Target, reserve: usize) -> Result<String> {
+        let limit = target.limit();
         let full: Vec<Option<String>> = state.steps.iter().map(|s| s.output.clone()).collect();
         let body = self.render_with(state, &full, target)?;
         let mut excess = (body.chars().count() + reserve).saturating_sub(limit);
@@ -142,7 +142,7 @@ impl Renderer<'_> {
                 .build()
                 .expect("default syntax is valid"),
         );
-        let run_url = self.run.url.clone();
+        let run_url = self.run_url.map(str::to_string);
         env.add_filter("output", move |step: Value| -> Value {
             let name = step.get_attr("name").ok();
             let output = name
@@ -183,8 +183,8 @@ impl Renderer<'_> {
             .collect();
         let run = RunView {
             id: &state.run_id,
-            attempt: &self.run.attempt,
-            url: self.run.url.as_deref(),
+            attempt: state.attempt,
+            url: self.run_url,
             failing: state.is_failing(),
             finalized: state.finalized,
         };
@@ -270,7 +270,6 @@ fn truncate_middle(text: &str, cap: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::names;
     use crate::status::Status;
 
     fn config() -> Config {
@@ -290,95 +289,13 @@ mod tests {
         }
     }
 
-    fn render(template: &str, state: &State, target: Target) -> String {
-        let github = github();
-        let run = RunInfo {
-            url: Some("https://github.com/o/r/actions/runs/1".into()),
-            attempt: "1".into(),
-        };
-        Renderer {
-            template,
-            github: &github,
-            run: &run,
-            config: &config(),
-        }
-        .render(state, target, COMMENT_LIMIT, 0)
-        .unwrap()
-    }
-
     fn record(state: &mut State, name: &str, status: Status, output: Option<&str>) {
         state.record(name, status, output.map(String::from));
     }
 
     #[test]
-    fn default_template_renders_table_and_outputs() {
-        let mut state = State::new("1");
-        state.set_steps(&names(&["init", "plan", "apply"]));
-        record(&mut state, "init", Status::Success, Some("Initialized"));
-        record(&mut state, "plan", Status::Failure, Some("Error: boom"));
-        let body = render(DEFAULT_TEMPLATE, &state, Target::Comment);
-
-        assert!(body.contains("### Terraform · plan\n\n<sub>"), "{body}");
-        assert!(body.contains("| Init | ✅ Success |"), "{body}");
-        assert!(body.contains("| Plan | ❌ Failed |"), "{body}");
-        assert!(body.contains("| Apply | ⬜ Pending |"), "{body}");
-        // Failing Output is expanded, the rest collapsed.
-        assert!(body.contains("#### Plan output"), "{body}");
-        assert!(
-            body.contains("<details><summary>Init output</summary>"),
-            "{body}"
-        );
-        assert!(body.contains("[View workflow run](https://github.com/o/r/actions/runs/1)"));
-        // No banner or celebration before Finalize.
-        assert!(!body.contains("[!WARNING]"));
-        assert!(!body.contains("🎉"));
-    }
-
-    #[test]
-    fn table_rows_are_contiguous() {
-        let mut state = State::new("1");
-        state.set_steps(&names(&["a", "b"]));
-        let body = render(DEFAULT_TEMPLATE, &state, Target::Summary);
-        assert!(
-            body.contains("|------|--------|\n| A | ⬜ Pending |\n| B | ⬜ Pending |\n"),
-            "{body}"
-        );
-    }
-
-    #[test]
-    fn output_is_not_html_escaped() {
-        let mut state = State::new("1");
-        record(
-            &mut state,
-            "plan",
-            Status::Success,
-            Some("<resource> & \"x\""),
-        );
-        let body = render(DEFAULT_TEMPLATE, &state, Target::Comment);
-        assert!(body.contains("<resource> & \"x\""), "{body}");
-    }
-
-    #[test]
-    fn custom_template_sees_context() {
-        let mut state = State::new("7");
-        record(
-            &mut state,
-            "plan",
-            Status::Custom("changes".into()),
-            Some("diff"),
-        );
-        let template = "{{ github.actor }} {{ run.id }} {{ target }}\n{% for s in steps %}{{ s.name }}={{ s.status }}\n{{ s | output }}{% endfor %}";
-        let body = render(template, &state, Target::Comment);
-        assert!(
-            body.starts_with("octocat 7 comment\nplan=changes\n"),
-            "{body}"
-        );
-        assert!(body.contains("```\ndiff\n```"), "{body}");
-    }
-
-    #[test]
     fn large_outputs_keep_head_and_tail_and_link_to_the_run() {
-        let mut state = State::new("1");
+        let mut state = State::new("1", 1);
         let lines: String = (0..20_000).map(|i| format!("line {i}\n")).collect();
         let big = format!("ROOT CAUSE\n{lines}THE ERROR\n");
         record(&mut state, "plan", Status::Failure, Some(&big));
@@ -389,17 +306,13 @@ mod tests {
             Some(&"y\n".repeat(50_000)),
         );
         let github = github();
-        let run = RunInfo {
-            url: Some("https://github.com/o/r/actions/runs/1".into()),
-            attempt: "1".into(),
-        };
         let body = Renderer {
             template: DEFAULT_TEMPLATE,
             github: &github,
-            run: &run,
+            run_url: Some("https://github.com/o/r/actions/runs/1"),
             config: &config(),
         }
-        .render(&state, Target::Comment, COMMENT_LIMIT, 1000)
+        .render(&state, Target::Comment, 1000)
         .unwrap();
         assert!(body.chars().count() + 1000 <= COMMENT_LIMIT);
         assert!(body.contains("ROOT CAUSE"));
@@ -431,14 +344,6 @@ mod tests {
         let out = truncate_middle(&"é".repeat(1000), 100);
         assert!(out.chars().count() <= 100, "{}", out.chars().count());
         assert!(out.ends_with('é'));
-    }
-
-    #[test]
-    fn untruncated_output_has_no_note() {
-        let mut state = State::new("1");
-        record(&mut state, "plan", Status::Success, Some("ok"));
-        let body = render(DEFAULT_TEMPLATE, &state, Target::Comment);
-        assert!(!body.contains("Output truncated"), "{body}");
     }
 
     #[test]

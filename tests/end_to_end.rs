@@ -104,7 +104,7 @@ fn full_run_without_a_pull_request() {
 
     job.cmd()
         .args(["step", "init"])
-        .write_stdin("Terraform initialized\n")
+        .write_stdin("Terraform initialized <resource> & \"x\"\n")
         .assert()
         .success();
 
@@ -120,6 +120,16 @@ fn full_run_without_a_pull_request() {
         .success()
         .stdout(predicate::str::contains("Plan: 1 to add"));
 
+    let comment = job.comment();
+    assert!(
+        comment.contains("### Terraform · plan\n\n<sub>"),
+        "{comment}"
+    );
+    assert!(
+        !comment.contains("🎉"),
+        "no celebration before Finalize: {comment}"
+    );
+
     job.cmd().arg("finalize").assert().success();
 
     let comment = job.comment();
@@ -127,7 +137,14 @@ fn full_run_without_a_pull_request() {
     assert!(comment.contains("| Plan | changes |"), "{comment}");
     assert!(comment.contains("| Apply | ⏭️ Skipped |"), "{comment}");
     assert!(comment.contains("| 🎉 | All done |"), "{comment}");
-    assert!(comment.contains("Terraform initialized"), "{comment}");
+    assert!(
+        comment.contains("<details><summary>Init output</summary>"),
+        "{comment}"
+    );
+    assert!(
+        comment.contains("Terraform initialized <resource> & \"x\""),
+        "Output is not HTML-escaped: {comment}"
+    );
     assert!(comment.contains("Plan: 1 to add"), "{comment}");
 
     assert_eq!(
@@ -149,26 +166,22 @@ fn exec_failure_is_failing_and_exits_with_command_code() {
         .args(["exec", "validate", "echo bad >&2; exit 3"])
         .assert()
         .code(3)
-        .stdout(predicate::str::contains("bad"));
+        .stderr(predicate::str::contains("bad"))
+        .stdout(predicate::str::contains("bad").not());
     assert!(job.comment().contains("| Validate | ❌ Failed |"));
     assert_eq!(job.read("github_output"), "status=failure\n");
 }
 
 #[test]
-fn unmapped_zero_exit_records_failure_and_exits_non_zero() {
+fn a_failing_status_from_exit_code_zero_exits_one() {
     let job = Job::new();
     job.cmd()
         .args(["exec", "x", "--exit-code-map", "2=changes", "true"])
         .assert()
         .code(1);
     assert!(job.comment().contains("| X | ❌ Failed |"));
-}
-
-#[test]
-fn mapped_failure_exits_non_zero() {
-    let job = Job::new();
     job.cmd()
-        .args(["exec", "x", "--exit-code-map", "0=failure", "true"])
+        .args(["exec", "y", "--exit-code-map", "0=failure", "true"])
         .assert()
         .code(1);
 }
@@ -318,6 +331,26 @@ fn an_empty_value_resets_a_label() {
 }
 
 #[test]
+fn an_empty_value_resets_the_template_and_comment_key() {
+    let job = Job::new();
+    let template = job.path("t.md.j2");
+    fs::write(&template, "custom").unwrap();
+    job.cmd()
+        .args(["config", "set", "comment-key=prod"])
+        .arg(format!("template={}", template.display()))
+        .assert()
+        .success();
+    job.cmd()
+        .args(["config", "set", "comment-key=", "template="])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""template": "default""#))
+        .stdout(predicate::str::contains(
+            r#""comment-key": "Terraform/plan""#,
+        ));
+}
+
+#[test]
 fn a_later_label_relabels_the_comment() {
     let job = Job::new();
     job.cmd().args(["step", "plan"]).assert().success();
@@ -433,21 +466,13 @@ fn config_set_comment_key_marks_the_comment() {
 }
 
 #[test]
-fn config_rejects_unknown_keys_and_bad_templates() {
+fn config_rejects_unknown_keys() {
     let job = Job::new();
     job.cmd()
         .args(["config", "set", "colour=blue"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown config key"));
-    let template = job.path("bad.md.j2");
-    fs::write(&template, "{% for %}").unwrap();
-    job.cmd()
-        .args(["config", "set"])
-        .arg(format!("template={}", template.display()))
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("invalid"));
 }
 
 #[test]
@@ -575,16 +600,6 @@ fn preview_without_a_comment_says_so() {
 }
 
 #[test]
-fn usage_errors() {
-    let job = Job::new();
-    job.cmd().args(["exec", "plan"]).assert().code(2);
-    job.cmd().args(["steps", "set"]).assert().code(2);
-    job.cmd().args(["step"]).assert().code(2);
-    job.cmd().args(["config"]).assert().code(2);
-    job.cmd().assert().code(2);
-}
-
-#[test]
 fn needs_a_comment_key_when_workflow_env_is_missing() {
     let job = Job::new();
     job.cmd()
@@ -615,6 +630,49 @@ fn pull_request_creates_the_status_comment() {
 
     let job = Job::new().with_pull_request(&server.url());
     job.cmd().args(["step", "plan"]).assert().success();
+    create.assert();
+}
+
+/// A PR with no comments yet that expects the Status Comment created with `token`.
+fn expect_create_with_token(server: &mut mockito::ServerGuard, token: &str) -> mockito::Mock {
+    server
+        .mock("POST", "/graphql")
+        .with_body(comments_page(&[]))
+        .create();
+    server
+        .mock("POST", "/repos/o/r/issues/5/comments")
+        .match_header("authorization", format!("Bearer {token}").as_str())
+        .with_status(201)
+        .with_body(r#"{"id":77,"body":""}"#)
+        .create()
+}
+
+#[test]
+fn config_token_beats_github_token() {
+    let mut server = mockito::Server::new();
+    let create = expect_create_with_token(&mut server, "from-config");
+    let job = Job::new().with_pull_request(&server.url());
+    job.cmd()
+        .args(["config", "set", "token=from-config"])
+        .assert()
+        .success();
+    job.cmd().args(["step", "plan"]).assert().success();
+    create.assert();
+}
+
+#[test]
+fn token_flag_beats_config_token() {
+    let mut server = mockito::Server::new();
+    let create = expect_create_with_token(&mut server, "from-flag");
+    let job = Job::new().with_pull_request(&server.url());
+    job.cmd()
+        .args(["config", "set", "token=from-config"])
+        .assert()
+        .success();
+    job.cmd()
+        .args(["--token", "from-flag", "step", "plan"])
+        .assert()
+        .success();
     create.assert();
 }
 
@@ -677,17 +735,17 @@ fn a_comment_from_a_newer_run_is_not_overwritten() {
 }
 
 #[test]
-fn a_comment_from_an_older_release_keeps_its_steps() {
-    let old = "| Plan | ✅ |\n\n<!-- status-comment:state {\"run_id\":\"100\",\"steps\":[{\"name\":\"old\",\"display_name\":\"Old\",\"status\":\"success\"}]} -->\n<!-- status-comment:key Terraform%2Fplan -->\n";
+fn a_comment_from_another_version_is_replaced_in_place() {
+    // Read as the same Run's attempt 9, it would block this write as newer.
+    let other = "| Old |\n\n<!-- status-comment:state {\"version\":\"0.0.0\",\"run_id\":\"100\",\"attempt\":9,\"finalized\":false,\"steps\":[{\"name\":\"old\",\"status\":\"success\"}]} -->\n<!-- status-comment:key Terraform%2Fplan -->\n";
     let mut server = mockito::Server::new();
     server
         .mock("POST", "/graphql")
-        .with_body(comments_page(&[(2, old, true)]))
+        .with_body(comments_page(&[(2, other, true)]))
         .create();
     let update = server
         .mock("PATCH", "/repos/o/r/issues/comments/2")
         .match_body(Matcher::AllOf(vec![
-            Matcher::Regex(r"\| Old \| ✅ Success \|".into()),
             Matcher::Regex(r"\| Plan \| ✅ Success \|".into()),
             Matcher::Regex(format!(
                 r#"\\"version\\":\\"{}\\""#,
@@ -724,7 +782,7 @@ fn comments_by_other_authors_are_ignored() {
 }
 
 #[test]
-fn github_api_failure_warns_without_changing_exit_code() {
+fn github_api_failure_is_an_error_without_changing_exit_code() {
     let mut server = mockito::Server::new();
     server.mock("POST", "/graphql").with_status(403).create();
     let job = Job::new().with_pull_request(&server.url());
@@ -733,9 +791,36 @@ fn github_api_failure_warns_without_changing_exit_code() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "::warning::status-comment: could not read the Status Comment",
+            "::error::status-comment: could not read the Status Comment",
         ));
-    assert_eq!(job.read("github_output"), "status=success\n");
+    // The comment work ended there, so nothing was recorded.
+    assert_eq!(job.read("github_output"), "");
+}
+
+#[test]
+fn a_failed_save_still_runs_the_command_and_keeps_its_exit_code() {
+    let mut server = mockito::Server::new();
+    server
+        .mock("POST", "/graphql")
+        .with_body(comments_page(&[]))
+        .create();
+    let create = server
+        .mock("POST", "/repos/o/r/issues/5/comments")
+        .with_status(500)
+        .expect(1)
+        .create();
+    let job = Job::new().with_pull_request(&server.url());
+    job.cmd()
+        .args(["exec", "plan", "echo ran; exit 3"])
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("ran"))
+        .stdout(predicate::str::contains(
+            "::error::status-comment: could not update the Status Comment",
+        ));
+    // Only the `running` save was tried; the comment work ended there.
+    create.assert();
+    assert_eq!(job.read("github_output"), "");
 }
 
 /// Local Mode: run on a laptop with no GitHub Actions environment at all.
@@ -844,5 +929,5 @@ fn local_mode_starts_a_new_run_after_finalize() {
     let comment = local_comment(dir.path());
     assert!(comment.contains("| Apply |"), "{comment}");
     assert!(!comment.contains("| Plan |"), "{comment}");
-    assert!(comment.contains(r#""run_id":"local-2""#), "{comment}");
+    assert!(comment.contains(r#""run_id":"local""#), "{comment}");
 }

@@ -1,40 +1,66 @@
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::thread;
 
 use anyhow::{Context, Result};
 
 pub struct Executed {
     pub exit_code: i32,
-    /// stdout and stderr merged, in the order they were printed.
+    /// stdout and stderr merged, in the order they arrived.
     pub output: String,
 }
 
-/// Runs `command` under `bash -o pipefail`, streaming its output to `echo` while capturing it.
-pub fn execute(command: &str, echo: &mut impl Write) -> Result<Executed> {
-    // `exec 2>&1` merges stderr into the one pipe so ordering is preserved.
+/// Runs `command` under `bash -o pipefail`, echoing its stdout to `out` and its
+/// stderr to `err` as they arrive, while capturing both into one Output.
+pub fn execute(command: &str, out: impl Write + Send, err: impl Write + Send) -> Result<Executed> {
     let mut child = Command::new("bash")
-        .args(["-o", "pipefail", "-c", &format!("exec 2>&1\n{command}")])
+        .args(["-o", "pipefail", "-c", command])
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .context("failed to start bash")?;
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stderr = child.stderr.take().expect("stderr is piped");
 
-    let mut pipe = child.stdout.take().expect("stdout is piped");
-    let mut captured = Vec::new();
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = pipe.read(&mut buf).context("reading command output")?;
-        if n == 0 {
-            break;
-        }
-        echo.write_all(&buf[..n])?;
-        echo.flush()?;
-        captured.extend_from_slice(&buf[..n]);
-    }
+    let captured = Mutex::new(Vec::new());
+    thread::scope(|scope| {
+        let stdout = scope.spawn(|| relay(stdout, out, &captured));
+        let stderr = scope.spawn(|| relay(stderr, err, &captured));
+        stdout.join().expect("stdout relay panicked")?;
+        stderr.join().expect("stderr relay panicked")
+    })
+    .context("reading command output")?;
+
     let status = child.wait().context("waiting for command")?;
+    let captured = captured.into_inner().expect("relays have finished");
     Ok(Executed {
         exit_code: exit_code(status),
         output: String::from_utf8_lossy(&captured).into_owned(),
     })
+}
+
+/// Copies one of the command's streams to `echo` chunk by chunk, appending each
+/// chunk to the shared capture as it arrives.
+fn relay(
+    mut pipe: impl Read,
+    mut echo: impl Write,
+    captured: &Mutex<Vec<u8>>,
+) -> std::io::Result<()> {
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = pipe.read(&mut buf)?;
+        if n == 0 {
+            return Ok(());
+        }
+        let chunk = &buf[..n];
+        captured
+            .lock()
+            .expect("no relay panics holding it")
+            .extend_from_slice(chunk);
+        echo.write_all(chunk)?;
+        echo.flush()?;
+    }
 }
 
 #[cfg(unix)]
@@ -55,23 +81,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn captures_merged_output_in_order_and_echoes_it() {
-        let mut echo = Vec::new();
-        let result = execute("echo one; echo two >&2; echo three", &mut echo).unwrap();
+    fn echoes_each_stream_to_its_own_and_captures_both_in_order() {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        // The pauses let each line arrive before the next is printed.
+        let result = execute(
+            "echo one; sleep 0.1; echo two >&2; sleep 0.1; echo three",
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
         assert_eq!(result.output, "one\ntwo\nthree\n");
-        assert_eq!(String::from_utf8(echo).unwrap(), result.output);
+        assert_eq!(String::from_utf8(out).unwrap(), "one\nthree\n");
+        assert_eq!(String::from_utf8(err).unwrap(), "two\n");
         assert_eq!(result.exit_code, 0);
     }
 
     #[test]
     fn pipefail_surfaces_upstream_failure() {
-        let result = execute("false | cat", &mut Vec::new()).unwrap();
+        let result = execute("false | cat", Vec::new(), Vec::new()).unwrap();
         assert_eq!(result.exit_code, 1);
     }
 
     #[test]
     fn signals_map_to_128_plus_signal() {
-        let result = execute("kill -9 $$", &mut Vec::new()).unwrap();
+        let result = execute("kill -9 $$", Vec::new(), Vec::new()).unwrap();
         assert_eq!(result.exit_code, 137);
     }
 }

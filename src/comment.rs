@@ -3,7 +3,10 @@
 
 use std::collections::HashMap;
 
-use crate::state::State;
+use anyhow::Result;
+
+use crate::render::{Renderer, Target};
+use crate::state::{State, VERSION};
 
 const KEY_PREFIX: &str = "<!-- status-comment:key ";
 const STATE_PREFIX: &str = "<!-- status-comment:state ";
@@ -125,14 +128,23 @@ fn parse_outputs(body: &str) -> HashMap<String, String> {
     outputs
 }
 
-/// Recovers a Run's state, including each Step's Output, from a Status Comment body.
+/// Recovers a Run's state, including each Step's Output, from a Status Comment
+/// body. A state written by another status-comment version reads as none.
 pub fn load(body: &str) -> Option<State> {
-    let mut state = parse_state(body)?;
+    let mut state = parse_state(body).filter(|s| s.version == VERSION)?;
     let mut outputs = parse_outputs(body);
     for step in &mut state.steps {
         step.output = outputs.remove(&step.name);
     }
     Some(state)
+}
+
+/// The whole Status Comment: the rendered Template, sized to leave room for
+/// the hidden markers, then the markers.
+pub fn build(renderer: &Renderer, state: &State, key: &str) -> Result<String> {
+    let reserve = compose("", state, key).chars().count();
+    let rendered = renderer.render(state, Target::Comment, reserve)?;
+    Ok(compose(&rendered, state, key))
 }
 
 /// Appends the hidden key and state markers to a rendered body.
@@ -151,7 +163,7 @@ mod tests {
     use crate::status::Status;
 
     fn state_with_output(name: &str, output: &str) -> State {
-        let mut state = State::new("42");
+        let mut state = State::new("42", 1);
         state.record(name, Status::Success, Some(output.into()));
         state
     }
@@ -187,7 +199,7 @@ mod tests {
     #[test]
     fn json_in_state_cannot_close_the_marker() {
         // The JSON holds Step names and Custom Statuses verbatim.
-        let mut state = State::new("1");
+        let mut state = State::new("1", 1);
         state.record("a --> b", Status::Custom("c-->d".into()), None);
         let body = compose("", &state, "k");
         assert_eq!(
@@ -205,7 +217,7 @@ mod tests {
 
     #[test]
     fn key_marker_matches_exact_key() {
-        let body = compose("x", &State::new("1"), "wf/plan");
+        let body = compose("x", &State::new("1", 1), "wf/plan");
         assert!(has_key_marker(&body, "wf/plan"));
         assert!(!has_key_marker(&body, "wf/pla"));
         assert!(!has_key_marker(&body, "wf/plan-2"));

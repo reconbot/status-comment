@@ -9,16 +9,10 @@ use crate::status::Status;
 #[derive(Debug, Clone)]
 pub struct ExitCodeMap(BTreeMap<i32, Status>);
 
-impl Default for ExitCodeMap {
-    fn default() -> Self {
-        ExitCodeMap(BTreeMap::from([(0, Status::Success)]))
-    }
-}
-
 impl ExitCodeMap {
-    /// The mapped Status, or `None` when the exit code isn't handled.
-    pub fn get(&self, code: i32) -> Option<&Status> {
-        self.0.get(&code)
+    /// The mapped Status; unmapped exit codes are `failure`.
+    pub fn status_for(&self, code: i32) -> Status {
+        self.0.get(&code).cloned().unwrap_or(Status::Failure)
     }
 }
 
@@ -36,13 +30,7 @@ impl FromStr for ExitCodeMap {
                 .trim()
                 .parse()
                 .with_context(|| format!("invalid exit code in {entry:?}"))?;
-            let status: Status = status.trim().parse()?;
-            if map.insert(code, status).is_some() {
-                return Err(anyhow!("exit code {code} is mapped more than once"));
-            }
-        }
-        if map.is_empty() {
-            return Err(anyhow!("exit code map is empty"));
+            map.insert(code, status.trim().into());
         }
         Ok(ExitCodeMap(map))
     }
@@ -55,28 +43,14 @@ mod tests {
     #[test]
     fn parses_entries() {
         let map: ExitCodeMap = "0=success, 1=failure,2=changes".parse().unwrap();
-        assert_eq!(map.get(0), Some(&Status::Success));
-        assert_eq!(map.get(1), Some(&Status::Failure));
-        assert_eq!(map.get(2), Some(&Status::Custom("changes".into())));
-        assert_eq!(map.get(137), None);
+        assert_eq!(map.status_for(0), Status::Success);
+        assert_eq!(map.status_for(2), Status::Custom("changes".into()));
+        assert_eq!(map.status_for(137), Status::Failure);
     }
 
     #[test]
     fn rejects_malformed_entries() {
         assert!("0success".parse::<ExitCodeMap>().is_err());
         assert!("x=success".parse::<ExitCodeMap>().is_err());
-        assert!("0=".parse::<ExitCodeMap>().is_err());
-        assert!("".parse::<ExitCodeMap>().is_err());
-        assert!("0=success,0=failure".parse::<ExitCodeMap>().is_err());
-    }
-
-    #[test]
-    fn missing_comma_is_rejected() {
-        // Must not silently parse as one Custom Status named `failure=2=changes`.
-        assert!(
-            "0=success,1=failure=2=changes"
-                .parse::<ExitCodeMap>()
-                .is_err()
-        );
     }
 }

@@ -9,27 +9,20 @@ Keeps a pull request comment up to date with steps of a GitHub Actions job's. Re
 
 ### GitHub
 
-In a workflow, this repo is also an action that installs the binary and puts it on `PATH`:
+In a workflow, this repo is also an action that installs the binary from the same release and puts it on `PATH`:
+
+<!-- x-release-please-start-version -->
 
 ```yaml
 permissions:
   pull-requests: write
 steps:
-  - uses: reconbot/status-comment@v0.4.0
+  - uses: reconbot/status-comment@v0.5.0
     with:
       token: ${{ github.token }}
   - run: status-comment steps set build test
   - run: status-comment exec build 'cargo build'
   - run: status-comment exec test 'cargo test'
-```
-
-By default it installs the latest version. To specify another version;
-
-```yaml
-steps:
-  - uses: reconbot/status-comment@v0.4.0
-    with:
-      version: v0.4.0
 ```
 
 The `token` input is saved to the config, so every later call uses it, the end-of-job `finalize` included, and no other step sees it. Instead, you can set `GITHUB_TOKEN` at the job level so `finalize` sees it too:
@@ -43,11 +36,13 @@ To load a config file, give its path; a `token` input is applied after it:
 
 ```yaml
 steps:
-  - uses: reconbot/status-comment@v0.4.0
+  - uses: reconbot/status-comment@v0.5.0
     with:
       config-path: .github/status-comment.json
       token: ${{ github.token }}
 ```
+
+<!-- x-release-please-end -->
 
 Both inputs write to the default state directory. If you use `--state-path`, run `config load` and `config set token=…` with it yourself.
 

@@ -6,7 +6,11 @@
       "bump-minor-pre-major": true,
       "draft": true,
       "force-tag-creation": true,
-      "include-component-in-tag": false
+      "include-component-in-tag": false,
+      "extra-files": [
+        { "type": "generic", "path": "action/install.js" },
+        { "type": "generic", "path": "README.md" }
+      ]
     }
   }
 }

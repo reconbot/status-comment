@@ -4,6 +4,8 @@ const { execFileSync } = require("node:child_process")
 const fs = require("node:fs")
 const path = require("node:path")
 
+const VERSION = "0.5.0" // x-release-please-version
+
 const TARGETS = {
   "linux-x64": "x86_64-unknown-linux-musl",
   "linux-arm64": "aarch64-unknown-linux-musl",
@@ -32,16 +34,19 @@ async function main() {
     throw new Error(`status-comment has no build for ${process.platform} ${process.arch}`)
   }
 
-  const repo = process.env.GITHUB_ACTION_REPOSITORY || "reconbot/status-comment"
-  const version = process.env.INPUT_VERSION || ""
-  const base = /^v\d+\.\d+\.\d+/.test(version)
-    ? `https://github.com/${repo}/releases/download/${version}`
-    : `https://github.com/${repo}/releases/latest/download`
+  const repo = process.env.GITHUB_ACTION_REPOSITORY
+  const url = `https://github.com/${repo}/releases/download/v${VERSION}/status-comment-${target}.tar.gz`
 
   const dir = path.join(process.env.RUNNER_TEMP, "status-comment-bin")
   fs.mkdirSync(dir, { recursive: true })
   const archive = path.join(dir, "status-comment.tar.gz")
-  fs.writeFileSync(archive, await download(`${base}/status-comment-${target}.tar.gz`))
+  let tarball
+  try {
+    tarball = await download(url)
+  } catch (error) {
+    throw new Error(`status-comment v${VERSION} for ${target} could not be downloaded: ${error.message}`)
+  }
+  fs.writeFileSync(archive, tarball)
   execFileSync("tar", ["-xzf", archive, "-C", dir])
   fs.rmSync(archive)
 

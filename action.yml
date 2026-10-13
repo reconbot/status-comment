@@ -5,9 +5,6 @@ branding:
   color: blue
 
 inputs:
-  version:
-    description: Release to install, e.g. v0.1.0. Defaults to the latest release.
-    default: ""
   config-path:
     description: A config JSON file to load with `status-comment config load`.
     default: ""

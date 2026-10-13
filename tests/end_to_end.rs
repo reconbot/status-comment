@@ -326,6 +326,27 @@ fn failing_output_is_expanded_and_the_rest_collapsed_by_default() {
 }
 
 #[test]
+fn finished_steps_without_output_say_so() {
+    let job = Job::new();
+    job.cmd()
+        .args(["steps", "set", "lint", "plan", "apply"])
+        .assert()
+        .success();
+    job.cmd().args(["exec", "lint", "true"]).assert().success();
+    job.cmd()
+        .args(["step", "plan"])
+        .write_stdin("  \n\n")
+        .assert()
+        .success();
+    let comment = job.comment();
+    assert!(comment.contains("_Lint: no output_"), "{comment}");
+    assert!(comment.contains("_Plan: no output_"), "{comment}");
+    assert!(!comment.contains("Lint output"), "{comment}");
+    assert!(!comment.contains("Plan output"), "{comment}");
+    assert!(!comment.contains("Apply: no output"), "pending: {comment}");
+}
+
+#[test]
 fn show_output_expands_a_status() {
     let job = Job::new();
     job.cmd()

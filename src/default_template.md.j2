@@ -17,9 +17,11 @@
 {% if run.finalized and not run.failing %}
 | Party | 🎉 💃🕺 |
 {% endif %}
-{% for step in steps if step.has_output %}
+{% for step in steps if step.has_output or step.status not in ["pending", "running", "skipped"] %}
 
-{% if step.show_output %}
+{% if not step.has_output %}
+_{{ step.display_name }}: no output_
+{% elif step.show_output %}
 #### {{ step.display_name }} output
 
 {{ step | output }}

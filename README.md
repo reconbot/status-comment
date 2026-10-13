@@ -175,7 +175,7 @@ Templates are [minijinja](https://github.com/mitsuhiko/minijinja) (Jinja2) files
 
 | Variable | Contents |
 |---|---|
-| `steps[]` | `name`, `display_name`, `status_label` and `show_output` (from the config), `status`, `failing`, `has_output` |
+| `steps[]` | `name`, `display_name`, `status_label` and `show_output` (from the config), `status`, `failing`, `has_output` (false when the Output is missing or only whitespace) |
 | `run` | `id`, `attempt`, `url`, `failing`, `finalized` |
 | `github` | `workflow`, `job`, `actor`, `repository`, `sha`, `short_sha`, `pr_number`, `pr_url`, `server_url`, `updated_at` |
 | `target` | `"comment"` or `"summary"` |

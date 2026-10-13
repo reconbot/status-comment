@@ -59,6 +59,7 @@ struct StepView<'a> {
     status: &'a str,
     status_label: String,
     failing: bool,
+    /// False when the Output is missing or only whitespace.
     has_output: bool,
     show_output: bool,
 }
@@ -183,7 +184,7 @@ impl Renderer<'_> {
                 status: s.status.as_str(),
                 status_label: self.config.status_label(s.status.as_str()),
                 failing: s.status.is_failing(),
-                has_output: o.is_some(),
+                has_output: o.as_ref().is_some_and(|o| !o.trim().is_empty()),
                 show_output: self.config.show_output(s.status.as_str()),
             })
             .collect();

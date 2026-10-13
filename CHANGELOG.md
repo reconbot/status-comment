@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0](https://github.com/reconbot/status-comment/compare/v0.5.0...v0.6.0) (2026-10-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* the version input is removed.
+
+### Features
+
+* install the CLI release matching the action's version ([#9](https://github.com/reconbot/status-comment/issues/9)) ([cd2b327](https://github.com/reconbot/status-comment/commit/cd2b327aa13eb46a9c88fa4b086bd51259830767))
+
 ## [0.5.0](https://github.com/reconbot/status-comment/compare/v0.4.0...v0.5.0) (2026-10-13)
 
 

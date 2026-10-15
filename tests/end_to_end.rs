@@ -212,7 +212,7 @@ fn finalize_cancels_running_steps_and_warns() {
     job.cmd().arg("finalize").assert().success();
     let comment = job.comment();
     assert!(comment.contains("| Apply | 🚫 Cancelled |"), "{comment}");
-    assert!(comment.contains("> [!WARNING]"), "{comment}");
+    assert!(comment.contains("> [!CAUTION]"), "{comment}");
 }
 
 #[test]

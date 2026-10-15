@@ -1,11 +1,11 @@
 {% if target == "comment" %}
 ### {{ github.workflow or "Status" }}{{ (" · " ~ github.job) if github.job else "" }}
 
-<sub>Updated {{ github.updated_at }}{% if github.short_sha %} · `{{ github.short_sha }}`{% endif %}{% if github.actor %} · @{{ github.actor }}{% endif %}</sub>
+<sub>Updated {{ github.updated_at }}{% if github.short_sha %} · `{{ github.short_sha }}`{% endif %}{% if github.actor %} · @{{ github.actor }}{% endif %} [Workflow Run]({{ run.url }})</sub>
 
 {% endif %}
 {% if run.finalized and run.failing %}
-> [!WARNING]
+> [!ERROR]
 > Some steps failed.
 
 {% endif %}

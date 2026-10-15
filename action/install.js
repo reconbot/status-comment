@@ -4,7 +4,7 @@ const { execFileSync } = require("node:child_process")
 const fs = require("node:fs")
 const path = require("node:path")
 
-const VERSION = "0.6.0" // x-release-please-version
+const VERSION = "0.6.1" // x-release-please-version
 
 const TARGETS = {
   "linux-x64": "x86_64-unknown-linux-musl",

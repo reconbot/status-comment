@@ -17,7 +17,7 @@ In a workflow, this repo is also an action that installs the binary from the sam
 permissions:
   pull-requests: write
 steps:
-  - uses: reconbot/status-comment@v0.6.0
+  - uses: reconbot/status-comment@v0.6.1
     with:
       token: ${{ github.token }}
   - run: status-comment steps set build test
@@ -36,7 +36,7 @@ To load a config file, give its path; a `token` input is applied after it:
 
 ```yaml
 steps:
-  - uses: reconbot/status-comment@v0.6.0
+  - uses: reconbot/status-comment@v0.6.1
     with:
       config-path: .github/status-comment.json
       token: ${{ github.token }}

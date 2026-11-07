@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/reconbot/status-comment/compare/v0.6.1...v0.6.2) (2026-11-07)
+
+
+### Bug Fixes
+
+* allow open output to still be closed ([#13](https://github.com/reconbot/status-comment/issues/13)) ([7607ef9](https://github.com/reconbot/status-comment/commit/7607ef9080a284270f1f5584f1874ec805116547))
+
 ## [0.6.1](https://github.com/reconbot/status-comment/compare/v0.6.0...v0.6.1) (2026-10-15)
 
 

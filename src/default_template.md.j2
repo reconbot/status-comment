@@ -22,9 +22,11 @@
 {% if not step.has_output %}
 _{{ step.display_name }}: no output_
 {% elif step.show_output %}
-#### {{ step.display_name }} output
+<details open><summary>{{ step.display_name }} output</summary>
 
 {{ step | output }}
+
+</details>
 {% else %}
 <details><summary>{{ step.display_name }} output</summary>
 

@@ -194,7 +194,7 @@ fn step_sets_status_and_never_fails() {
         .write_stdin("oops")
         .assert()
         .success();
-    assert!(job.comment().contains("#### Bar output"));
+    assert!(job.comment().contains("<details open><summary>Bar output"));
     job.cmd()
         .args(["step", "apply", "--status", "cancelled"])
         .assert()
@@ -318,7 +318,10 @@ fn failing_output_is_expanded_and_the_rest_collapsed_by_default() {
         .assert()
         .success();
     let comment = job.comment();
-    assert!(comment.contains("#### Lint output"), "{comment}");
+    assert!(
+        comment.contains("<details open><summary>Lint output"),
+        "{comment}"
+    );
     assert!(
         comment.contains("<details><summary>Plan output</summary>"),
         "{comment}"
@@ -369,7 +372,10 @@ fn show_output_expands_a_status() {
         .assert()
         .success();
     let comment = job.comment();
-    assert!(comment.contains("#### Plan output"), "{comment}");
+    assert!(
+        comment.contains("<details open><summary>Plan output"),
+        "{comment}"
+    );
     assert!(
         comment.contains("<details><summary>Lint output</summary>"),
         "{comment}"
